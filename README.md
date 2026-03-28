@@ -44,10 +44,10 @@ Usporedbom zvukova iz zapisa s ulaza u predavaonicu sa zvukovima studenata iz ba
 Nakon toga bi u lijevom panelu PyCharma trebali vidjeti sljedeću strukturu:
 
 ```
-moj_projekt/
-├── main.py
-├── augmentacija.py
-└── requirements.txt
+📁 moj_projekt/
+├── 📄 main.py
+├── 📄 augmentacija.py
+└── 📄 requirements.txt
 ```
 
 > Ako datoteke nisu vidljive odmah, desni klik na naziv projekta → **Reload from Disk**.
@@ -62,6 +62,34 @@ pip install -r requirements.txt
 
 ---
 
+## Struktura projekta
+
+Nakon postavljanja, u mapi projekta potrebno je ručno stvoriti još 2 foldera:
+
+- **`baza/`** — za svakog studenta stvori podfolder s njegovim imenom i u njega stavi njegove audio snimke
+- **`snimke/`** — ovdje stavljaš snimke s ulaza u predavaonicu koje algoritam treba analizirati
+
+Konačna struktura trebala bi izgledati ovako:
+
+```
+📁 moj_projekt/
+├── 📄 main.py
+├── 📄 augmentacija.py
+├── 📄 requirements.txt
+├── 📁 baza/
+│   ├── 📁 Ime Studenta/
+│   │   ├── 🔊 snimka1.wav
+│   │   └── 🔊 snimka2.wav
+│   └── 📁 Ime Prezime/
+│       ├── 🔊 snimka1.wav
+│       └── 🔊 snimka2.wav
+└── 📁 snimke/
+    ├── 🔊 ulaz1.wav
+    └── 🔊 ulaz2.wav
+```
+
+---
+
 ## Pokretanje koda
 
 Klikni zelenu strelicu ▶️ u gornjem desnom kutu PyCharma, ili desni klik na `main.py` → **Run 'main'**.
@@ -69,5 +97,5 @@ Klikni zelenu strelicu ▶️ u gornjem desnom kutu PyCharma, ili desni klik na 
 ---
 
 <div align="right">
-<sub>Zadnja izmjena: 28.03.2026. u 20:10h</sub>
+<sub>Zadnja izmjena: 28.03.2026. u 20:23h</sub>
 </div>
