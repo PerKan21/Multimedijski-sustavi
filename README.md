@@ -20,7 +20,7 @@ Usporedbom zvukova iz zapisa s ulaza u predavaonicu sa zvukovima studenata iz ba
 
 ## Preduvjeti
 
-- **Python 3.10+** → [python.org/downloads](https://www.python.org/downloads/)
+- **Python 3.10 ili više** → [python.org/downloads](https://www.python.org/downloads/)
   > ⚠️ Tijekom instalacije označi **"Add Python to PATH"** prije nego klikneš *Install Now*.
   > 🔄 Nakon instalacije Pythona **preporučuje se restartati računalo** prije nego nastaviš.
 - **PyCharm Community Edition** → [jetbrains.com/pycharm/download](https://www.jetbrains.com/pycharm/download/)
