@@ -39,8 +39,8 @@ Usporedbom zvukova iz zapisa s ulaza u predavaonicu sa zvukovima studenata iz ba
 ### 2. Dodaj datoteke projekta
 
 1. U lijevom panelu desni klik na naziv projekta → **Open In → Explorer**
-2. U otvorenu mapu zalijepiti sve 3 datoteke preuzete s ovog repozitorija: `main.py`, `augmentacija.py` i `requirements.txt`
-   > Ako te pita želi li zamijeniti postojeće datoteke — klikni **Da**
+2. Otvori mapu svog projekta i u nju zalijepi sve 3 datoteke preuzete s ovog repozitorija: `main.py`, `augmentacija.py` i `requirements.txt`
+   > Ako te pita za zamjenu postojećih datoteka — klikni **Da**
 
 Nakon toga bi u lijevom panelu PyCharma trebali vidjeti sljedeću strukturu:
 
