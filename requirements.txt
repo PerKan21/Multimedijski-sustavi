@@ -1,0 +1,9 @@
+transformers
+torch
+soundfile
+librosa
+pydub
+noisereduce
+scikit-learn
+numpy
+scipy
