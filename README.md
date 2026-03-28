@@ -33,7 +33,6 @@ Usporedbom zvukova iz zapisa s ulaza u predavaonicu sa zvukovima studenata iz ba
 
 1. Pokreni PyCharm → **File → New Project**
 2. Odaberi lokaciju ili ostavi sve na defaultu
-   - Provjeri da je uključena opcija **Create a welcome script**
 3. Klikni **Create**
 
 ### 2. Dodaj datoteke projekta
