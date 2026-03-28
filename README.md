@@ -31,15 +31,27 @@ Usporedbom zvukova iz zapisa s ulaza u predavaonicu sa zvukovima studenata iz ba
 
 ### 1. Stvori novi projekt u PyCharmu
 
-1. Pokreni PyCharm → klikni **New Project**
-2. Odaberi lokaciju i ostavi sve na defaultu → **Create**
-3. Kada pita za *Welcome Script*, klikni **Yes** (ili **Create**)
+1. Pokreni PyCharm → **File → New Project**
+2. Odaberi lokaciju, ostavi sve na defaultu
+   - Provjeri da je uključena opcija **Create a welcome script**
+3. Klikni **Create**
 
 ### 2. Dodaj datoteke projekta
 
 1. U lijevom panelu desni klik na naziv projekta → **Open In → Explorer**
 2. U otvorenu mapu zalijepiti sve 3 datoteke preuzete s ovog repozitorija: `main.py`, `augmentacija.py` i `requirements.txt`
-   > Ako te pita želiš li zamijeniti postojeće datoteke — klikni **Yes**
+   > Ako te pita želi li zamijeniti postojeće datoteke — klikni **Da**
+
+Nakon toga bi u lijevom panelu PyCharma trebali vidjeti sljedeću strukturu:
+
+```
+moj_projekt/
+├── main.py
+├── augmentacija.py
+└── requirements.txt
+```
+
+> Ako datoteke nisu vidljive odmah, desni klik na naziv projekta → **Reload from Disk**.
 
 ### 3. Instaliraj potrebne pakete
 
@@ -51,12 +63,12 @@ pip install -r requirements.txt
 
 ---
 
-## Pokretanje
+## Pokretanje koda
 
 Klikni zelenu strelicu ▶️ u gornjem desnom kutu PyCharma, ili desni klik na `main.py` → **Run 'main'**.
 
 ---
 
 <div align="right">
-<sub>Zadnja izmjena: 28.03.2026. u 20:01h</sub>
+<sub>Zadnja izmjena: 28.03.2026. u 20:10h</sub>
 </div>
