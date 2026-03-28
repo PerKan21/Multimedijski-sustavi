@@ -33,6 +33,7 @@ Usporedbom zvukova iz zapisa s ulaza u predavaonicu sa zvukovima studenata iz ba
 
 1. Pokreni PyCharm → **File → New Project**
 2. Odaberi lokaciju ili ostavi sve na defaultu
+   - Provjeri da je uključena opcija **Create a welcome script**
 3. Klikni **Create**
 
 ### 2. Dodaj datoteke projekta
@@ -41,7 +42,7 @@ Usporedbom zvukova iz zapisa s ulaza u predavaonicu sa zvukovima studenata iz ba
 2. Otvori mapu svog projekta i u nju zalijepi sve 3 datoteke preuzete s ovog repozitorija: `main.py`, `augmentacija.py` i `requirements.txt`
    > Ako te pita za zamjenu postojećih datoteka — klikni **Da**
 
-Nakon toga bi u lijevom panelu PyCharma trebali vidjeti sljedeću strukturu:
+Nakon toga bi u lijevom panelu PyCharma trebao vidjeti sljedeću strukturu:
 
 ```
 📁 moj_projekt/
@@ -67,7 +68,7 @@ pip install -r requirements.txt
 Nakon postavljanja, u mapi projekta potrebno je ručno stvoriti još 2 foldera:
 
 - **`baza/`** — za svakog studenta stvori podfolder s njegovim imenom i u njega stavi njegove audio snimke
-- **`snimke/`** — ovdje stavljaš snimke s ulaza u predavaonicu koje algoritam treba analizirati
+- **`snimke/`** — ovdje stavi snimke s ulaza u predavaonicu koje algoritam treba analizirati
 
 Konačna struktura trebala bi izgledati ovako:
 
@@ -77,15 +78,19 @@ Konačna struktura trebala bi izgledati ovako:
 ├── 📄 augmentacija.py
 ├── 📄 requirements.txt
 ├── 📁 baza/
-│   ├── 📁 Ime Studenta/
+│   ├── 📁 Ime Studenta 1/
 │   │   ├── 🔊 snimka1.wav
 │   │   └── 🔊 snimka2.wav
-│   └── 📁 Ime Prezime/
+│   ├── 📁 Ime Studenta 2/
+│   │   ├── 🔊 snimka1.wav
+│   │   └── 🔊 snimka2.wav
+│   └── 📁 Ime Studenta N/
 │       ├── 🔊 snimka1.wav
 │       └── 🔊 snimka2.wav
 └── 📁 snimke/
     ├── 🔊 ulaz1.wav
-    └── 🔊 ulaz2.wav
+    ├── 🔊 ulaz2.wav
+    └── 🔊 ulazN.wav
 ```
 
 ---
