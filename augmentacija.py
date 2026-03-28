@@ -14,7 +14,7 @@ Augmentacije koje se primjenjuju:
 
 Struktura:
     baza/
-        Tomislav_Perkovic/
+        Ime Studenta/
             original.wav          <- originalna snimka
             aug_pitch_up.wav      <- generirane varijante
             aug_pitch_down.wav

@@ -7,7 +7,7 @@ Pristup: Prethodno istrenirani UniSpeech-SAT model (Microsoft HuggingFace)
 
 Struktura direktorija:
     baza/
-        Tomislav_Perkovic/      <- jedan folder po studentu
+        Ime Studenta/           <- jedan folder po studentu
             snimka1.wav
             snimka2.m4a
     snimke/
@@ -18,15 +18,6 @@ Struktura direktorija:
 Instalacija:
     pip install transformers torch soundfile librosa pydub noisereduce tqdm
 
-Changelog:
-    v1.0 - Osnovna implementacija ECAPA-TDNN + kosinusna slicnost
-    v1.1 - Dodana predobrada (uklanjanje suma)
-    v1.2 - Dodana segmentacija za dulje snimke
-    v1.3 - Datum i vrijeme u prisutnost.txt
-    v2.0 - Normalizacija glasnoce, optimalni prag, cache embeddinga, tqdm napredak
-    v2.1 - Popravljen minimalni prag
-    v2.2 - Popravljen progress bar, ispis rezultata nakon obrade
-    v2.3 - Vise embeddinga po studentu umjesto prosjeka, minimalna udaljenost pri identifikaciji
 """
 
 # ================================================================
