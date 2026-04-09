@@ -7,3 +7,5 @@ noisereduce
 scikit-learn
 numpy
 scipy
+openpyxl
+tqdm

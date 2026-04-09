@@ -5,21 +5,11 @@ Iz postojećih referentnih snimki u bazi generira dodatne varijante
 kako bi se povećao broj uzoraka po studentu i poboljšala robustnost
 ECAPA-TDNN embeddinga.
 
-Augmentacije koje se primjenjuju:
-  - Pitch shift (visina tona)
-  - Time stretch (brzina govora)
-  - Dodavanje Gaussovog šuma
-  - Promjena glasnoće
-  - Room reverb (simulacija prostora)
-
-Struktura:
-    baza/
-        Ime Studenta/
-            original.wav          <- originalna snimka
-            aug_pitch_up.wav      <- generirane varijante
-            aug_pitch_down.wav
-            aug_brze.wav
-            ...
+Svako pokretanje skripte dodaje još jedan sloj augmentacije:
+  - 1. pokretanje: aug_*.wav        (augmentacije originalnih snimki)
+  - 2. pokretanje: 2aug_*.wav       (augmentacije augmentiranih snimki)
+  - 3. pokretanje: 3aug_*.wav       (augmentacije 2. sloja)
+  - itd.
 
 Instalacija:
     pip install librosa soundfile numpy
@@ -29,6 +19,7 @@ Instalacija:
 # IMPORTS
 # ================================================================
 import os
+import re
 import numpy as np
 import librosa
 import soundfile as sf
@@ -38,35 +29,69 @@ warnings.filterwarnings("ignore")
 
 
 # ================================================================
-# POSTAVKE - konfiguriraj koje augmentacije zelite i koliko agresivno
+# POSTAVKE
 # ================================================================
-SR          = 16000
-DIR_BAZA    = "baza"
-PODRZANI_FORMATI = (".wav", ".mp3", ".m4a", ".ogg", ".flac")
+SR               = 16000
+DIR_BAZA         = "baza"
+PODRZANI_FORMATI = (".wav", ".mp3", ".m4a", ".ogg", ".flac", ".mp4")
 
-# Definicija augmentacija: (naziv, parametri)
-# Svaka augmentacija generira jednu novu datoteku po originalnoj snimci
 AUGMENTACIJE = [
-    ("pitch_up",    {"pitch_steps":  2.0}),   # Visi ton
-    ("pitch_down",  {"pitch_steps": -2.0}),   # Nizi ton
-    ("pitch_up2",   {"pitch_steps":  4.0}),   # Znacajno visi ton
-    ("pitch_down2", {"pitch_steps": -4.0}),   # Znacajno nizi ton
-    ("brze",        {"time_rate":    1.15}),   # 15% brzi govor
-    ("sporije",     {"time_rate":    0.85}),   # 15% sporiji govor
-    ("sum_mali",    {"sum_razina":   0.003}),  # Mali pozadinski sum
-    ("sum_veci",    {"sum_razina":   0.007}),  # Veci pozadinski sum
-    ("tiho",        {"glasnoca":     0.6}),    # Tiše
-    ("glasno",      {"glasnoca":     1.4}),    # Glasnije
-    ("reverb",      {"reverb":       True}),   # Simulacija prostora
+    ("pitch_up",    {"pitch_steps":  2.0}),
+    ("pitch_down",  {"pitch_steps": -2.0}),
+    ("pitch_up2",   {"pitch_steps":  4.0}),
+    ("pitch_down2", {"pitch_steps": -4.0}),
+    ("brze",        {"time_rate":    1.15}),
+    ("sporije",     {"time_rate":    0.85}),
+    ("sum_mali",    {"sum_razina":   0.003}),
+    ("sum_veci",    {"sum_razina":   0.007}),
+    ("tiho",        {"glasnoca":     0.6}),
+    ("glasno",      {"glasnoca":     1.4}),
+    ("reverb",      {"reverb":       True}),
 ]
 
 
 # ================================================================
-# UCITAVANJE AUDIO - ucitava datoteku i normalizira na 16kHz mono
+# ODREĐIVANJE SLOJA - provjerava koji sloj augmentacije je sljedeći
+#                     na temelju postojećih datoteka u folderu
+# ================================================================
+def odredi_sloj(putanja_studenta: str) -> int:
+    """
+    Gleda postojeće aug_ datoteke i vraća sljedeći broj sloja.
+    Nema aug_ datoteka -> sloj 1 (prefiks: aug_)
+    Ima aug_ ali ne 2aug_ -> sloj 2 (prefiks: 2aug_)
+    Ima 2aug_ ali ne 3aug_ -> sloj 3 (prefiks: 3aug_)
+    itd.
+    """
+    datoteke = os.listdir(putanja_studenta)
+    max_sloj = 0
+    for dat in datoteke:
+        # Provjeri je li augmentirana datoteka
+        if dat.startswith("aug_"):
+            max_sloj = max(max_sloj, 1)
+        else:
+            # Provjeri format Naug_ (npr. 2aug_, 3aug_)
+            match = re.match(r'^(\d+)aug_', dat)
+            if match:
+                max_sloj = max(max_sloj, int(match.group(1)))
+    return max_sloj + 1
+
+
+def prefiks_sloja(sloj: int) -> str:
+    """Vraća prefiks za dani sloj: sloj 1 -> 'aug_', sloj 2 -> '2aug_', itd."""
+    return "aug_" if sloj == 1 else f"{sloj}aug_"
+
+
+def prefiks_prethodnog_sloja(sloj: int) -> str:
+    """Vraća prefiks prethodnog sloja (snimki koje augmentiramo)."""
+    if sloj == 1:
+        return None  # augmentiramo originalne
+    return "aug_" if sloj == 2 else f"{sloj - 1}aug_"
+
+
+# ================================================================
+# UCITAVANJE AUDIO
 # ================================================================
 def ucitaj_audio(putanja: str) -> tuple:
-    """Ucitava audio datoteku i vraca (signal, sr)."""
-    # Konverzija ne-wav formata kroz pydub ako treba
     if not putanja.lower().endswith(".wav"):
         from pydub import AudioSegment
         ime = os.path.splitext(putanja)[0]
@@ -86,51 +111,32 @@ def ucitaj_audio(putanja: str) -> tuple:
 
 
 # ================================================================
-# AUGMENTACIJE - svaka funkcija prima signal i vraca modificirani signal
+# AUGMENTACIJE
 # ================================================================
-
-def aug_pitch(signal: np.ndarray, sr: int, pitch_steps: float) -> np.ndarray:
-    """Mijenja visinu tona za pitch_steps polutonova."""
+def aug_pitch(signal, sr, pitch_steps):
     return librosa.effects.pitch_shift(signal, sr=sr, n_steps=pitch_steps)
 
-
-def aug_time_stretch(signal: np.ndarray, time_rate: float) -> np.ndarray:
-    """Ubrzava ili usporava govor bez mijenjanja tona."""
+def aug_time_stretch(signal, time_rate):
     return librosa.effects.time_stretch(signal, rate=time_rate)
 
+def aug_sum(signal, sum_razina):
+    return signal + np.random.normal(0, sum_razina, len(signal))
 
-def aug_sum(signal: np.ndarray, sum_razina: float) -> np.ndarray:
-    """Dodaje Gaussov bijeli sum."""
-    sum_signal = np.random.normal(0, sum_razina, len(signal))
-    return signal + sum_signal
-
-
-def aug_glasnoca(signal: np.ndarray, glasnoca: float) -> np.ndarray:
-    """Mijenja glasnocu mnozeci signal s faktorom."""
+def aug_glasnoca(signal, glasnoca):
     return signal * glasnoca
 
-
-def aug_reverb(signal: np.ndarray, sr: int) -> np.ndarray:
-    """
-    Simulira akustiku prostorije jednostavnim FIR filterom.
-    Dodaje kratke odgode (early reflections) koje imitiraju odjek.
-    """
-    # Jednostavni room impulse response
-    ir_duljina = int(0.1 * sr)  # 100ms
+def aug_reverb(signal, sr):
+    ir_duljina = int(0.1 * sr)
     ir = np.zeros(ir_duljina)
-    ir[0] = 1.0                          # Direktni signal
-    ir[int(0.02 * sr)] = 0.4             # Prva refleksija (20ms)
-    ir[int(0.04 * sr)] = 0.25            # Druga refleksija (40ms)
-    ir[int(0.07 * sr)] = 0.15            # Treca refleksija (70ms)
-    ir[int(0.09 * sr)] = 0.08            # Cetvrta refleksija (90ms)
-
+    ir[0] = 1.0
+    ir[int(0.02 * sr)] = 0.4
+    ir[int(0.04 * sr)] = 0.25
+    ir[int(0.07 * sr)] = 0.15
+    ir[int(0.09 * sr)] = 0.08
     reverb_signal = np.convolve(signal, ir)[:len(signal)]
-    # Normalizacija
     return reverb_signal / np.max(np.abs(reverb_signal) + 1e-8) * np.max(np.abs(signal))
 
-
-def primijeni_augmentaciju(signal: np.ndarray, sr: int, naziv: str, params: dict) -> np.ndarray:
-    """Primjenjuje odabranu augmentaciju na signal."""
+def primijeni_augmentaciju(signal, sr, params):
     if "pitch_steps" in params:
         return aug_pitch(signal, sr, params["pitch_steps"])
     elif "time_rate" in params:
@@ -141,23 +147,15 @@ def primijeni_augmentaciju(signal: np.ndarray, sr: int, naziv: str, params: dict
         return aug_glasnoca(signal, params["glasnoca"])
     elif "reverb" in params:
         return aug_reverb(signal, sr)
-    else:
-        return signal
-
-
-# ================================================================
-# NORMALIZACIJA - osigurava da signal ne prekoraci [-1, 1]
-# ================================================================
-def normaliziraj(signal: np.ndarray) -> np.ndarray:
-    max_val = np.max(np.abs(signal))
-    if max_val > 0:
-        return signal / max_val * 0.95
     return signal
 
+def normaliziraj(signal):
+    max_val = np.max(np.abs(signal))
+    return signal / max_val * 0.95 if max_val > 0 else signal
+
 
 # ================================================================
-# GLAVNI PROGRAM - prolazi kroz sve studente u bazi i za svaku
-#                  originalnu snimku generira sve augmentacije
+# GLAVNI PROGRAM
 # ================================================================
 def main():
     print("=" * 55)
@@ -173,21 +171,38 @@ def main():
 
         print(f"\nStudent: {ime_studenta}")
 
-        # Pronadji originalne snimke (preskoci vec augmentirane)
-        originalne = [
-            f for f in os.listdir(putanja_studenta)
-            if f.lower().endswith(PODRZANI_FORMATI)
-            and not f.startswith("aug_")
-            and not f.endswith("_konv.wav")
-        ]
+        # Odredi koji sloj augmentacije radimo
+        sloj        = odredi_sloj(putanja_studenta)
+        novi_prefiks = prefiks_sloja(sloj)
+        stari_prefiks = prefiks_prethodnog_sloja(sloj)
 
-        if not originalne:
-            print("  Nema originalnih snimki, preskacam.")
+        print(f"  Sloj augmentacije: {sloj} (prefiks: {novi_prefiks})")
+
+        # Odaberi snimke koje augmentiramo
+        if sloj == 1:
+            # Augmentiramo originalne (bez ikakvog aug_ prefiksa)
+            izvorne = [
+                f for f in os.listdir(putanja_studenta)
+                if f.lower().endswith(PODRZANI_FORMATI)
+                and not re.match(r'^(\d*aug_)', f)
+                and not f.endswith("_konv.wav")
+            ]
+        else:
+            # Augmentiramo snimke prethodnog sloja
+            izvorne = [
+                f for f in os.listdir(putanja_studenta)
+                if f.startswith(stari_prefiks)
+                and f.lower().endswith(".wav")
+                and not f.endswith("_konv.wav")
+            ]
+
+        if not izvorne:
+            print(f"  Nema snimki za augmentaciju sloja {sloj}, preskacam.")
             continue
 
-        print(f"  Originalnih snimki: {len(originalne)}")
+        print(f"  Snimki za augmentaciju: {len(izvorne)}")
 
-        for naziv_snimke in originalne:
+        for naziv_snimke in izvorne:
             putanja_snimke = os.path.join(putanja_studenta, naziv_snimke)
             ime_bez_ext    = os.path.splitext(naziv_snimke)[0]
 
@@ -197,33 +212,29 @@ def main():
                 print(f"  UPOZORENJE: Ne mogu ucitati {naziv_snimke} ({e})")
                 continue
 
-            # Generiraj svaku augmentaciju
             for aug_naziv, aug_params in AUGMENTACIJE:
-                izlaz_naziv = f"aug_{ime_bez_ext}_{aug_naziv}.wav"
+                izlaz_naziv = f"{novi_prefiks}{ime_bez_ext}_{aug_naziv}.wav"
                 izlaz_put   = os.path.join(putanja_studenta, izlaz_naziv)
 
-                # Preskoci ako vec postoji
                 if os.path.exists(izlaz_put):
                     continue
 
                 try:
-                    aug_signal = primijeni_augmentaciju(signal, sr, aug_naziv, aug_params)
+                    aug_signal = primijeni_augmentaciju(signal, sr, aug_params)
                     aug_signal = normaliziraj(aug_signal)
                     sf.write(izlaz_put, aug_signal, sr)
                     ukupno_generirano += 1
                 except Exception as e:
-                    print(f"  UPOZORENJE: Augmentacija '{aug_naziv}' nije uspjela za {naziv_snimke} ({e})")
+                    print(f"  UPOZORENJE: '{aug_naziv}' nije uspjela za {naziv_snimke} ({e})")
 
-        # Prebrojaj ukupno snimki nakon augmentacije
-        sve_snimke = [
-            f for f in os.listdir(putanja_studenta)
-            if f.lower().endswith(".wav") and not f.endswith("_konv.wav")
-        ]
-        print(f"  Ukupno snimki nakon augmentacije: {len(sve_snimke)}")
+        # Ukupno snimki
+        sve = [f for f in os.listdir(putanja_studenta)
+               if f.lower().endswith(".wav") and not f.endswith("_konv.wav")]
+        print(f"  Ukupno snimki nakon augmentacije: {len(sve)}")
 
     print(f"\n{'=' * 55}")
     print(f"Gotovo! Generirano {ukupno_generirano} novih snimki.")
-    print(f"Pokreni ecapa_tdnn.py za treniranje s prosirenom bazom.")
+    print(f"Obrisi baza_cache.pkl i pokreni main.py.")
 
 
 if __name__ == "__main__":

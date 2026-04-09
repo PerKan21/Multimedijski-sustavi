@@ -1,0 +1,106 @@
+"""
+Predobrada audio signala
+=========================
+Konverzija formata, uklanjanje šuma, normalizacija glasnoće i VAD segmentacija.
+"""
+
+import subprocess
+import numpy as np
+import librosa
+import noisereduce as nr
+import soundfile as sf
+from pydub import AudioSegment
+
+# ================================================================
+# FFMPEG SETUP
+# ================================================================
+ffmpeg_path = subprocess.run(
+    "where ffmpeg", capture_output=True, text=True, shell=True
+).stdout.strip().split("\n")[0]
+if ffmpeg_path:
+    AudioSegment.converter = ffmpeg_path
+    AudioSegment.ffprobe   = ffmpeg_path.replace("ffmpeg.exe", "ffprobe.exe")
+
+
+# ================================================================
+# KONVERZIJA - pretvara m4a/mp3/ogg u wav koji soundfile moze citati
+# ================================================================
+def u_wav(putanja: str) -> str:
+    if putanja.lower().endswith(".wav"):
+        return putanja
+    import os
+    dir_dat  = os.path.dirname(putanja)
+    ime_dat  = os.path.splitext(os.path.basename(putanja))[0]
+    konv_dir = os.path.join(dir_dat, f"{ime_dat}_konv")
+    os.makedirs(konv_dir, exist_ok=True)
+    wav_put  = os.path.join(konv_dir, f"{ime_dat}.wav")
+    if not os.path.exists(wav_put):
+        AudioSegment.from_file(putanja).export(wav_put, format="wav")
+    return wav_put
+
+
+# ================================================================
+# REDUKCIJA ŠUMA - koristi prvih 0.3s kao uzorak šuma
+# ================================================================
+def ukloni_sum(signal: np.ndarray, sr: int, prop_decrease: float = 0.75) -> np.ndarray:
+    duljina_uzorka = int(0.3 * sr)
+    uzorak = signal[:duljina_uzorka] if len(signal) > duljina_uzorka else signal
+    return nr.reduce_noise(
+        y=signal, y_noise=uzorak, sr=sr,
+        stationary=False, prop_decrease=prop_decrease
+    )
+
+
+# ================================================================
+# NORMALIZACIJA GLASNOĆE
+# ================================================================
+def normaliziraj_glasnocu(signal: np.ndarray) -> np.ndarray:
+    max_val = np.max(np.abs(signal))
+    return signal / max_val * 0.95 if max_val > 0 else signal
+
+
+# ================================================================
+# UCITAVANJE I PREDOBRADA SIGNALA IZ DATOTEKE
+# ================================================================
+def ucitaj_signal(putanja: str, sr_ciljni: int, prop_decrease: float) -> np.ndarray:
+    """Ucitava audio datoteku, pretvara u mono 16kHz i primjenjuje predobradu."""
+    putanja = u_wav(putanja)
+    signal, sr = sf.read(putanja)
+    signal = np.array(signal, dtype=np.float32)
+    if signal.ndim > 1:
+        signal = signal.mean(axis=1)
+    if sr != sr_ciljni:
+        signal = librosa.resample(signal, orig_sr=sr, target_sr=sr_ciljni)
+    signal = ukloni_sum(signal, sr_ciljni, prop_decrease)
+    signal = normaliziraj_glasnocu(signal)
+    return signal
+
+
+# ================================================================
+# VAD - detekcija govornih segmenata u dužoj snimci
+#       detektira govor, spaja bliske segmente,
+#       filtrira prekratke segmente
+# ================================================================
+def vad_segmentacija(signal: np.ndarray, sr: int,
+                     top_db: float, min_duljina: float, spajanje: float) -> list:
+    """
+    Vraca listu (pocetak_s, kraj_s) govornih segmenata.
+    """
+    intervali = librosa.effects.split(
+        signal, top_db=top_db, frame_length=512, hop_length=128
+    )
+    if len(intervali) == 0:
+        return []
+
+    segmenti = [(s / sr, e / sr) for s, e in intervali]
+
+    # Spoji bliske segmente
+    spojeni = [segmenti[0]]
+    for poc, kraj in segmenti[1:]:
+        if poc - spojeni[-1][1] <= spajanje:
+            spojeni[-1] = (spojeni[-1][0], kraj)
+        else:
+            spojeni.append((poc, kraj))
+
+    # Filtriraj prekratke segmente
+    return [(p, k) for p, k in spojeni if (k - p) >= min_duljina]
