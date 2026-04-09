@@ -58,21 +58,23 @@ def primijeni_pragove(prag_donji: float, prag_gornji: float) -> tuple:
     """
     Ako su FIKSNI_PRAG_DONJI / FIKSNI_PRAG_GORNJI postavljeni na
     vrijednost između 0.0 i 1.0, koristi ih umjesto dinamičkih.
+    Gornji prag se uvijek računa iz konačnog donjeg praga * faktor,
+    osim ako je i gornji eksplicitno postavljen.
     """
     d = prag_donji
     g = prag_gornji
 
     if isinstance(FIKSNI_PRAG_DONJI, float) and 0.0 < FIKSNI_PRAG_DONJI < 1.0:
         d = FIKSNI_PRAG_DONJI
+        g = d * FAKTOR_GORNJEG_PRAGA  # Preračunaj gornji iz fiksnog donjeg
         print(f"  Fiksni donji prag:  {d:.4f}")
+        print(f"  Gornji prag (iz fiksnog donjeg × {FAKTOR_GORNJEG_PRAGA}): {g:.4f}")
     else:
         print(f"  Dinamički donji prag: {d:.4f}")
 
     if isinstance(FIKSNI_PRAG_GORNJI, float) and 0.0 < FIKSNI_PRAG_GORNJI < 1.0:
         g = FIKSNI_PRAG_GORNJI
         print(f"  Fiksni gornji prag: {g:.4f}")
-    else:
-        print(f"  Dinamički gornji prag: {g:.4f}")
 
     return d, g
 
@@ -149,10 +151,10 @@ def main():
     os.makedirs("rezultati", exist_ok=True)
 
     print("\nKako želiš spremiti rezultate?")
-    print("  [0] Nemoj spremati, samo izađi")
     print("  [1] Tekstualna datoteka (.txt)")
     print("  [2] Excel tablica (.xlsx)")
-    odabir = input("Odabir (0/1/2, Enter = 1): ").strip()
+    print("  [0] Ne spremi, izađi")
+    odabir = input("Odabir (1/2/0, Enter = 1): ").strip()
 
     if odabir == "0":
         print("Rezultati nisu spremljeni.")

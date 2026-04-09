@@ -383,6 +383,7 @@ class App(tk.Tk):
         # Primijeni fiksne pragove ako su postavljeni
         if isinstance(cfg.FIKSNI_PRAG_DONJI, float) and 0.0 < cfg.FIKSNI_PRAG_DONJI < 1.0:
             prag_d = cfg.FIKSNI_PRAG_DONJI
+            prag_g = prag_d * cfg.FAKTOR_GORNJEG_PRAGA  # Preračunaj iz fiksnog donjeg
         if isinstance(cfg.FIKSNI_PRAG_GORNJI, float) and 0.0 < cfg.FIKSNI_PRAG_GORNJI < 1.0:
             prag_g = cfg.FIKSNI_PRAG_GORNJI
 
