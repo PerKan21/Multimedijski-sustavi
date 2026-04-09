@@ -126,6 +126,8 @@ Alternativno u terminalu:
 python gui.py
 ```
 
+![GUI sučelje](https://i.imgur.com/kVyHUM8.png)
+
 GUI omogućuje:
 - Odabir mape baze i ulaznih snimki
 - Izgradnju baze govornika s progress barom
@@ -145,9 +147,9 @@ python main.py
 
 Na kraju analize program pita za format spremanja:
 ```
+  [0] Nemoj spremati, samo izađi
   [1] Tekstualna datoteka (.txt)
   [2] Excel tablica (.xlsx)
-  [0] Ne spremi, izađi
 ```
 
 ---
@@ -164,7 +166,7 @@ Skripta `augmentacija.py` proširuje referentne snimke u bazi primjenom 11 audio
 python augmentacija.py
 ```
 
-> ⚠️ Nakon augmentacije obriši `baza_cache.pkl` da se baza obnovi s novim snimkama.
+> ⚠️ Nakon augmentacije obriši `baza_cache.pkl` da se baza ažurira s novim snimkama.
 
 ---
 
