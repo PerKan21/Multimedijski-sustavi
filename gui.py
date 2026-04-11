@@ -24,6 +24,12 @@ TEXT       = "#e8e8e8"
 TEXT_MUTE  = "#888888"
 SUCCESS    = "#3d7a42"
 SUCCESS_FG = "#7ecf85"
+WARN_1     = "#7a4a1a"   # Prisutan na malo snimki
+WARN_1_FG  = "#e8943a"
+WARN_2     = "#6a6a10"   # Prisutan na otprilike pola
+WARN_2_FG  = "#d4d44a"
+WARN_3     = "#2a6a2a"   # Prisutan na vecini
+WARN_3_FG  = "#7ecf85"
 DANGER     = "#7a3d3d"
 DANGER_FG  = "#cf7e7e"
 FONT       = "Cambria"
@@ -369,6 +375,9 @@ class App(tk.Tk):
                 trajanje=cfg.SEGMENT_TRAJANJE,
                 preklapanje=cfg.SEGMENT_PREKLAPANJE,
                 prop_decrease=cfg.SUM_PROP_DECREASE,
+                vad_top_db=cfg.VAD_TOP_DB,
+                vad_min_duljina=cfg.VAD_MIN_DULJINA,
+                vad_spajanje=cfg.VAD_SPAJANJE,
                 podrzani_formati=cfg.PODRZANI_FORMATI,
                 cache_putanja=cfg.CACHE_PUTANJA
             )
@@ -467,22 +476,46 @@ class App(tk.Tk):
         self._log("Analiza završena.")
 
     # ----------------------------------------------------------------
+    # ----------------------------------------------------------------
     # PRIKAZ REZULTATA - grid, abecedno, lijeva na desno
     # ----------------------------------------------------------------
     def _ocisti_rezultate(self):
         for w in self.frame_rez.winfo_children():
             w.destroy()
 
+    def _boja_prisutnosti(self, n: int, ukupno: int) -> tuple:
+        """Vraća (bg, fg) boju ovisno o omjeru prisutnosti."""
+        if ukupno == 0 or n == 0:
+            return DANGER, DANGER_FG
+        omjer = n / ukupno
+        if omjer == 1.0:
+            return SUCCESS, SUCCESS_FG
+        elif omjer >= 0.66:
+            return WARN_3, WARN_3_FG
+        elif omjer >= 0.33:
+            return WARN_2, WARN_2_FG
+        else:
+            return WARN_1, WARN_1_FG
+
     def _prikazi_rezultate(self, prisutnost: dict):
         self._ocisti_rezultate()
 
-        sortirani = sorted(prisutnost.items())
+        # Izbroji koliko puta je svaki student prisutan kroz sve snimke
+        ukupno_snimki = len(self.svi_rezultati)
+        broj_prisutnosti = {}
+        for ime in prisutnost:
+            broj = sum(
+                1 for _, (prepoznati_sn, _, _, _) in self.svi_rezultati.items()
+                if ime in prepoznati_sn
+            )
+            broj_prisutnosti[ime] = broj
+
+        sortirani = sorted(prisutnost.keys())
         stupci    = 4
 
-        for i, (ime, prisutan) in enumerate(sortirani):
-            bg_boja = SUCCESS if prisutan else DANGER
-            fg_boja = SUCCESS_FG if prisutan else DANGER_FG
-            oznaka  = "+" if prisutan else "−"
+        for i, ime in enumerate(sortirani):
+            n       = broj_prisutnosti[ime]
+            bg_boja, fg_boja = self._boja_prisutnosti(n, ukupno_snimki)
             red, col = divmod(i, stupci)
 
             okvir = tk.Frame(self.frame_rez, bg=bg_boja,
@@ -492,10 +525,18 @@ class App(tk.Tk):
 
             tk.Label(
                 okvir,
-                text=f"{oznaka}  {ime}",
+                text=f"{ime}",
                 bg=bg_boja, fg=fg_boja,
                 font=(FONT, 9, "bold"),
-                anchor="center", pady=6
+                anchor="center", pady=4
+            ).pack(fill="x", padx=4)
+
+            tk.Label(
+                okvir,
+                text=f"{n}/{ukupno_snimki}",
+                bg=bg_boja, fg=fg_boja,
+                font=(FONT, 8),
+                anchor="center", pady=2
             ).pack(fill="x", padx=4)
 
         for col in range(stupci):

@@ -44,7 +44,7 @@ SUM_PROP_DECREASE = 0.75     # Agresivnost redukcije šuma (0-1)
 # dist <= prag_donji               -> [+] SIGURAN
 # prag_donji < dist <= prag_gornji -> [?] NESIGURAN
 # dist > prag_gornji               -> [!] ULJEZ
-FAKTOR_GORNJEG_PRAGA = 1.8   # Gornji prag = donji * ovaj faktor
+FAKTOR_GORNJEG_PRAGA = 2.0   # Gornji prag = donji * ovaj faktor
 
 # Fiksni pragovi — postavi na float između 0.0 i 1.0 za fiksni prag,
 # ili None (ili bilo što drugo) za dinamički izračun iz baze
@@ -52,7 +52,7 @@ FIKSNI_PRAG_DONJI  = None   # npr. 0.12 za fiksni, None za dinamički
 FIKSNI_PRAG_GORNJI = None   # npr. 0.22 za fiksni, None za dinamički
 
 # --- Clustering: procjena broja govornika ---
-CLUSTERING_PRAG = 0.25
+CLUSTERING_PRAG = 0.08
 
 def primijeni_pragove(prag_donji: float, prag_gornji: float) -> tuple:
     """
@@ -92,9 +92,23 @@ def main():
 
     ucitaj_model()
 
-    print("\n[1] Ucitavanje baze govornika...")
-    baza = ucitaj_bazu(DIR_BAZA)
-    print(f"    Ukupno studenata u bazi: {len(baza)}")
+    print()
+    print("=" * 55)
+    print("[1] Ucitavanje baze govornika")
+    print("=" * 55)
+    baza = ucitaj_bazu(
+        DIR_BAZA,
+        sr=SR,
+        trajanje=SEGMENT_TRAJANJE,
+        preklapanje=SEGMENT_PREKLAPANJE,
+        prop_decrease=SUM_PROP_DECREASE,
+        vad_top_db=VAD_TOP_DB,
+        vad_min_duljina=VAD_MIN_DULJINA,
+        vad_spajanje=VAD_SPAJANJE,
+        podrzani_formati=PODRZANI_FORMATI,
+        cache_putanja=CACHE_PUTANJA
+    )
+    print(f"  Ukupno studenata u bazi: {len(baza)}")
     prag_donji, prag_gornji = izracunaj_pragove(baza)
     prag_donji, prag_gornji = primijeni_pragove(prag_donji, prag_gornji)
 
@@ -109,7 +123,10 @@ def main():
         print("\nNema snimki u folderu 'snimke'.")
         return
 
-    print(f"\n[2] Obrada {len(snimke)} ulaznih snimki...")
+    print()
+    print("=" * 55)
+    print(f"[2] Obrada {len(snimke)} ulaznih snimki")
+    print("=" * 55)
     svi_rezultati = {}
 
     for naziv in tqdm(snimke, desc="  Napredak", leave=True):
@@ -123,10 +140,11 @@ def main():
 
     print()
     for naziv, (prepoznati, segmenti, uljezi_seg, n_gov) in svi_rezultati.items():
-        print(f"\n  Snimka: {naziv}")
+        print("=" * 55)
+        print(f"  Snimka: {naziv}")
+        print()
         print(f"  Procijenjeni broj govornika: {n_gov}")
-        print(f"  {'Pocetak':10s} {'Kraj':10s} {'Trajanje':10s} Govornik")
-        print("  " + "-" * 55)
+        print()
         for poc, kraj, student, dist, status in segmenti:
             if student:
                 ime    = student
@@ -134,15 +152,35 @@ def main():
             else:
                 ime    = "NEPOZNAT (uljez)"
                 oznaka = "!"
-            print(f"  {fmt_s(poc):10s} {fmt_s(kraj):10s} {(kraj-poc):6.1f}s"
-                  f"    [{oznaka}] {ime} (dist={dist:.4f})")
-        print(f"  Prepoznati: {', '.join(sorted(prepoznati)) if prepoznati else 'nitko'}")
+            print(f"  [{oznaka}] {fmt_s(poc)} - {fmt_s(kraj)}  {ime} (dist={dist:.4f}, {status})")
+        print()
+        print(f"  Prepoznati: {', '.join(prepoznati) if prepoznati else 'nitko'}")
+        print()
+
+        # Popis prisutnosti po snimci
+        prepoznati_set = set(prepoznati)
+        nedostaju_sn   = sorted(set(prisutnost.keys()) - prepoznati_set)
+        print(f"  Prisutni na snimci ({len(prepoznati_set)}/{len(prisutnost)}):")
+        for ime in prepoznati:
+            print(f"    [+] {ime}")
+        print()
+        if nedostaju_sn:
+            print(f"  Nisu zabilježeni na ovoj snimci:")
+            for ime in nedostaju_sn:
+                print(f"    [-] {ime}")
+        print()
 
     print("\n" + "=" * 55)
-    print("POPIS PRISUTNOSTI")
+    print("POPIS PRISUTNOSTI PO SNIMCI")
     print("=" * 55)
-    for ime, prisutan in prisutnost.items():
-        print(f"  [{'+'  if prisutan else '-'}] {ime}")
+    for naziv, (prepoznati_sn, _, _, _) in svi_rezultati.items():
+        print(f"\n  {naziv}")
+        prepoznati_set = set(prepoznati_sn)
+        nedostaju_sn   = sorted(set(prisutnost.keys()) - prepoznati_set)
+        for ime in prepoznati_sn:
+            print(f"    [+] {ime}")
+        for ime in nedostaju_sn:
+            print(f"    [-] {ime}")
 
     from datetime import datetime
     timestamp = datetime.now().strftime("%d.%m.%Y. u %H:%M:%S")
@@ -151,10 +189,10 @@ def main():
     os.makedirs("rezultati", exist_ok=True)
 
     print("\nKako želiš spremiti rezultate?")
+    print("  [0] Nemoj spremati, samo izađi")
     print("  [1] Tekstualna datoteka (.txt)")
     print("  [2] Excel tablica (.xlsx)")
-    print("  [0] Ne spremi, izađi")
-    odabir = input("Odabir (1/2/0, Enter = 1): ").strip()
+    odabir = input("Odabir (0/1/2, Enter = 1): ").strip()
 
     if odabir == "0":
         print("Rezultati nisu spremljeni.")

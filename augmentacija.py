@@ -12,7 +12,7 @@ Svako pokretanje skripte dodaje još jedan sloj augmentacije:
   - itd.
 
 Instalacija:
-    pip install librosa soundfile numpy
+    pip install librosa soundfile numpy scipy
 """
 
 # ================================================================
@@ -20,6 +20,7 @@ Instalacija:
 # ================================================================
 import os
 import re
+import io
 import numpy as np
 import librosa
 import soundfile as sf
@@ -36,40 +37,36 @@ DIR_BAZA         = "baza"
 PODRZANI_FORMATI = (".wav", ".mp3", ".m4a", ".ogg", ".flac", ".mp4")
 
 AUGMENTACIJE = [
-    ("pitch_up",    {"pitch_steps":  2.0}),
-    ("pitch_down",  {"pitch_steps": -2.0}),
-    ("pitch_up2",   {"pitch_steps":  4.0}),
-    ("pitch_down2", {"pitch_steps": -4.0}),
-    ("brze",        {"time_rate":    1.15}),
-    ("sporije",     {"time_rate":    0.85}),
-    ("sum_mali",    {"sum_razina":   0.003}),
-    ("sum_veci",    {"sum_razina":   0.007}),
-    ("tiho",        {"glasnoca":     0.6}),
-    ("glasno",      {"glasnoca":     1.4}),
-    ("reverb",      {"reverb":       True}),
+    # --- Time stretch ---
+    ("brze_malo",    {"time_rate":    1.05}),   # +5% brzine
+    ("sporije_malo", {"time_rate":    0.95}),   # -5% brzine
+    # --- Gaussov šum ---
+    ("sum_mali",     {"sum_razina":   0.003}),
+    ("sum_veci",     {"sum_razina":   0.007}),
+    # --- Glasnoća ---
+    ("tiho",         {"glasnoca":     0.6}),
+    ("glasno",       {"glasnoca":     1.4}),
+    # --- Reverb ---
+    ("reverb",       {"reverb":       True}),
+    # --- Telefonski filtar (bandpass 300-3400 Hz) ---
+    ("telefon",      {"telefon":      True}),
+    # --- MP3 kompresija (simulira artefakte kompresije) ---
+    ("mp3",          {"mp3":          True}),
+    # --- Slučajni crop (nasumični isječak signala) ---
+    ("crop",         {"crop":         True}),
 ]
 
 
 # ================================================================
-# ODREĐIVANJE SLOJA - provjerava koji sloj augmentacije je sljedeći
-#                     na temelju postojećih datoteka u folderu
+# ODREĐIVANJE SLOJA
 # ================================================================
 def odredi_sloj(putanja_studenta: str) -> int:
-    """
-    Gleda postojeće aug_ datoteke i vraća sljedeći broj sloja.
-    Nema aug_ datoteka -> sloj 1 (prefiks: aug_)
-    Ima aug_ ali ne 2aug_ -> sloj 2 (prefiks: 2aug_)
-    Ima 2aug_ ali ne 3aug_ -> sloj 3 (prefiks: 3aug_)
-    itd.
-    """
     datoteke = os.listdir(putanja_studenta)
     max_sloj = 0
     for dat in datoteke:
-        # Provjeri je li augmentirana datoteka
         if dat.startswith("aug_"):
             max_sloj = max(max_sloj, 1)
         else:
-            # Provjeri format Naug_ (npr. 2aug_, 3aug_)
             match = re.match(r'^(\d+)aug_', dat)
             if match:
                 max_sloj = max(max_sloj, int(match.group(1)))
@@ -77,14 +74,12 @@ def odredi_sloj(putanja_studenta: str) -> int:
 
 
 def prefiks_sloja(sloj: int) -> str:
-    """Vraća prefiks za dani sloj: sloj 1 -> 'aug_', sloj 2 -> '2aug_', itd."""
     return "aug_" if sloj == 1 else f"{sloj}aug_"
 
 
 def prefiks_prethodnog_sloja(sloj: int) -> str:
-    """Vraća prefiks prethodnog sloja (snimki koje augmentiramo)."""
     if sloj == 1:
-        return None  # augmentiramo originalne
+        return None
     return "aug_" if sloj == 2 else f"{sloj - 1}aug_"
 
 
@@ -113,17 +108,17 @@ def ucitaj_audio(putanja: str) -> tuple:
 # ================================================================
 # AUGMENTACIJE
 # ================================================================
-def aug_pitch(signal, sr, pitch_steps):
-    return librosa.effects.pitch_shift(signal, sr=sr, n_steps=pitch_steps)
-
 def aug_time_stretch(signal, time_rate):
     return librosa.effects.time_stretch(signal, rate=time_rate)
+
 
 def aug_sum(signal, sum_razina):
     return signal + np.random.normal(0, sum_razina, len(signal))
 
+
 def aug_glasnoca(signal, glasnoca):
     return signal * glasnoca
+
 
 def aug_reverb(signal, sr):
     ir_duljina = int(0.1 * sr)
@@ -136,18 +131,73 @@ def aug_reverb(signal, sr):
     reverb_signal = np.convolve(signal, ir)[:len(signal)]
     return reverb_signal / np.max(np.abs(reverb_signal) + 1e-8) * np.max(np.abs(signal))
 
+
+def aug_telefon(signal, sr):
+    """
+    Bandpass filtar 300–3400 Hz — simulira frekvencijski odziv
+    telefonske linije / lošijeg mikrofona.
+    """
+    from scipy.signal import butter, sosfilt
+    sos = butter(4, [300, 3400], btype="bandpass", fs=sr, output="sos")
+    return sosfilt(sos, signal).astype(np.float32)
+
+
+def aug_mp3(signal, sr):
+    """
+    Prolazi signal kroz MP3 enkoder/dekoder (128 kbps) i natrag.
+    Simulira artefakte lossy kompresije koji su česti u stvarnim snimkama.
+    """
+    try:
+        from pydub import AudioSegment
+        # Signal -> WAV bytes -> pydub -> MP3 bytes -> pydub -> signal
+        buf_wav = io.BytesIO()
+        sf.write(buf_wav, signal, sr, format="WAV")
+        buf_wav.seek(0)
+        audio = AudioSegment.from_wav(buf_wav)
+        buf_mp3 = io.BytesIO()
+        audio.export(buf_mp3, format="mp3", bitrate="128k")
+        buf_mp3.seek(0)
+        audio_dec = AudioSegment.from_mp3(buf_mp3)
+        samples = np.array(audio_dec.get_array_of_samples(), dtype=np.float32)
+        samples /= (2 ** (audio_dec.sample_width * 8 - 1))
+        if audio_dec.channels > 1:
+            samples = samples.reshape(-1, audio_dec.channels).mean(axis=1)
+        if audio_dec.frame_rate != sr:
+            samples = librosa.resample(samples, orig_sr=audio_dec.frame_rate, target_sr=sr)
+        # Poravnaj duljinu
+        min_len = min(len(signal), len(samples))
+        return samples[:min_len]
+    except Exception:
+        return signal
+
+
+def aug_crop(signal, sr):
+    """
+    Nasumični crop — uzima random isječak minimalno 1.0s.
+    Simulira da model vidi različite dijelove govora iz iste snimke.
+    """
+    min_uzorci = int(1.0 * sr)
+    if len(signal) <= min_uzorci:
+        return signal
+    max_pocetak = len(signal) - min_uzorci
+    pocetak = np.random.randint(0, max_pocetak)
+    # Duljina cropa: između 60% i 90% originala
+    max_duljina = len(signal) - pocetak
+    min_duljina = max(min_uzorci, int(len(signal) * 0.6))
+    duljina = np.random.randint(min(min_duljina, max_duljina), max_duljina + 1)
+    return signal[pocetak:pocetak + duljina]
+
+
 def primijeni_augmentaciju(signal, sr, params):
-    if "pitch_steps" in params:
-        return aug_pitch(signal, sr, params["pitch_steps"])
-    elif "time_rate" in params:
-        return aug_time_stretch(signal, params["time_rate"])
-    elif "sum_razina" in params:
-        return aug_sum(signal, params["sum_razina"])
-    elif "glasnoca" in params:
-        return aug_glasnoca(signal, params["glasnoca"])
-    elif "reverb" in params:
-        return aug_reverb(signal, sr)
+    if "time_rate"  in params: return aug_time_stretch(signal, params["time_rate"])
+    if "sum_razina" in params: return aug_sum(signal, params["sum_razina"])
+    if "glasnoca"   in params: return aug_glasnoca(signal, params["glasnoca"])
+    if "reverb"     in params: return aug_reverb(signal, sr)
+    if "telefon"    in params: return aug_telefon(signal, sr)
+    if "mp3"        in params: return aug_mp3(signal, sr)
+    if "crop"       in params: return aug_crop(signal, sr)
     return signal
+
 
 def normaliziraj(signal):
     max_val = np.max(np.abs(signal))
@@ -171,16 +221,13 @@ def main():
 
         print(f"\nStudent: {ime_studenta}")
 
-        # Odredi koji sloj augmentacije radimo
-        sloj        = odredi_sloj(putanja_studenta)
-        novi_prefiks = prefiks_sloja(sloj)
+        sloj         = odredi_sloj(putanja_studenta)
+        novi_prefiks  = prefiks_sloja(sloj)
         stari_prefiks = prefiks_prethodnog_sloja(sloj)
 
         print(f"  Sloj augmentacije: {sloj} (prefiks: {novi_prefiks})")
 
-        # Odaberi snimke koje augmentiramo
         if sloj == 1:
-            # Augmentiramo originalne (bez ikakvog aug_ prefiksa)
             izvorne = [
                 f for f in os.listdir(putanja_studenta)
                 if f.lower().endswith(PODRZANI_FORMATI)
@@ -188,7 +235,6 @@ def main():
                 and not f.endswith("_konv.wav")
             ]
         else:
-            # Augmentiramo snimke prethodnog sloja
             izvorne = [
                 f for f in os.listdir(putanja_studenta)
                 if f.startswith(stari_prefiks)
@@ -227,7 +273,6 @@ def main():
                 except Exception as e:
                     print(f"  UPOZORENJE: '{aug_naziv}' nije uspjela za {naziv_snimke} ({e})")
 
-        # Ukupno snimki
         sve = [f for f in os.listdir(putanja_studenta)
                if f.lower().endswith(".wav") and not f.endswith("_konv.wav")]
         print(f"  Ukupno snimki nakon augmentacije: {len(sve)}")

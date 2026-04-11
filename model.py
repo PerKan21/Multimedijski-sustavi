@@ -12,7 +12,7 @@ import torch
 from tqdm import tqdm
 from transformers import AutoFeatureExtractor, AutoModel, logging as hf_logging
 
-from predobrada import ucitaj_signal, vad_segmentacija
+from predobrada import predobradi_signal, normaliziraj_segment
 
 hf_logging.set_verbosity_error()
 
@@ -62,8 +62,9 @@ def izvuci_embedding_iz_signala(signal: np.ndarray, sr: int) -> np.ndarray:
 def izvuci_embedding_sa_segmentacijom(signal: np.ndarray, sr: int,
                                        trajanje: float, preklapanje: float) -> np.ndarray:
     """
-    Segmentira signal i vraca prosjecni embedding svih segmenata.
-    Koristi se i za referentne snimke u bazi i za VAD segmente.
+    Segmentira procisceni signal i vraca prosjecni embedding.
+    Signal koji dolazi ovdje je vec prociscen VAD-om i normaliziran
+    po segmentu — dakle isti preprocessing kao za ulazne snimke.
     """
     segment_uzorci = int(trajanje * sr)
     korak          = segment_uzorci - int(preklapanje * sr)
@@ -75,12 +76,38 @@ def izvuci_embedding_sa_segmentacijom(signal: np.ndarray, sr: int,
         while pocetak < len(signal):
             seg = signal[pocetak:pocetak + segment_uzorci]
             if len(seg) >= int(0.5 * sr):
-                segmenti.append(seg)
+                # Normalizacija po segmentu — konzistentno s predobradom
+                segmenti.append(normaliziraj_segment(seg))
             pocetak += korak
+
+    if not segmenti:
+        segmenti = [signal]
 
     embeddinzi = [izvuci_embedding_iz_signala(s, sr) for s in segmenti]
     srednji = np.mean(embeddinzi, axis=0)
     return srednji / np.linalg.norm(srednji)
+
+
+# ================================================================
+# EKSTRAKCIJA EMBEDDINGA IZ DATOTEKE
+# Isti pipeline za bazu i za ulazne snimke:
+#   1. predobradi_signal (resample → denoising → VAD → norm po segmentu)
+#   2. izvuci_embedding_sa_segmentacijom
+# ================================================================
+def izvuci_embedding_iz_datoteke(putanja: str, sr: int,
+                                  trajanje: float, preklapanje: float,
+                                  prop_decrease: float,
+                                  vad_top_db: float, vad_min_duljina: float,
+                                  vad_spajanje: float) -> np.ndarray:
+    """
+    Preprocessing pipeline isti kao za ulazne snimke:
+    resample → opcionalni denoising → VAD → norm po segmentu → embedding
+    """
+    signal, _ = predobradi_signal(
+        putanja, sr, prop_decrease,
+        vad_top_db, vad_min_duljina, vad_spajanje
+    )
+    return izvuci_embedding_sa_segmentacijom(signal, sr, trajanje, preklapanje)
 
 
 # ================================================================
@@ -106,12 +133,15 @@ def ucitaj_bazu(dir_baza: str, callback=None,
                 sr: int = 16000,
                 trajanje: float = 1.5,
                 preklapanje: float = 0.3,
-                prop_decrease: float = 0.75,
+                prop_decrease: float = 0.0,
+                vad_top_db: float = 25,
+                vad_min_duljina: float = 0.3,
+                vad_spajanje: float = 0.15,
                 podrzani_formati: tuple = (".wav", ".mp3", ".m4a", ".ogg", ".flac", ".mp4"),
                 cache_putanja: str = "baza_cache.pkl") -> dict:
     """
-    Ucitava bazu govornika. Koristi cache ako postoji.
-    callback(ime, n_snimki) se poziva po ucitanom studentu.
+    Ucitava bazu govornika s istim preprocessingom kao ulazne snimke.
+    Default prop_decrease=0.0 (denoising iskljucen).
     """
     cache = ucitaj_cache(cache_putanja)
     if cache is not None:
@@ -130,9 +160,9 @@ def ucitaj_bazu(dir_baza: str, callback=None,
                     and not datoteka.endswith("_konv.wav")):
                 putanja = os.path.join(putanja_studenta, datoteka)
                 try:
-                    signal = ucitaj_signal(putanja, sr, prop_decrease)
-                    emb    = izvuci_embedding_sa_segmentacijom(
-                        signal, sr, trajanje, preklapanje
+                    emb = izvuci_embedding_iz_datoteke(
+                        putanja, sr, trajanje, preklapanje,
+                        prop_decrease, vad_top_db, vad_min_duljina, vad_spajanje
                     )
                     embeddinzi.append(emb)
                 except Exception as e:

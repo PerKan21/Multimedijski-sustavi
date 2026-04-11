@@ -10,8 +10,8 @@ import numpy as np
 from datetime import datetime
 from sklearn.cluster import AgglomerativeClustering
 
-from predobrada import ucitaj_signal, vad_segmentacija
-from model import izvuci_embedding_sa_segmentacijom
+from predobrada import predobradi_signal, vad_segmentacija, normaliziraj_segment
+from model import izvuci_embedding_sa_segmentacijom, izvuci_embedding_iz_signala
 
 
 # ================================================================
@@ -44,17 +44,18 @@ def identificiraj(embedding_ulaz: np.ndarray, baza: dict,
 # ================================================================
 # CLUSTERING - procjena broja govornika
 # ================================================================
-def procijeni_broj_govornika(embeddinzi: list, prag: float = 0.25) -> int:
+def procijeni_broj_govornika(embeddinzi: list, prag: float = 0.08) -> int:
     """
     Agglomerative clustering embeddinga VAD segmenata —
     procjenjuje koliko razlicitih govornika ima na snimci.
+    Koristi 'complete' linkage — osjetljivije na razlike između govornika.
     """
     if len(embeddinzi) < 2:
         return len(embeddinzi)
     X = np.array(embeddinzi)
     clustering = AgglomerativeClustering(
         n_clusters=None, distance_threshold=prag,
-        metric="cosine", linkage="average"
+        metric="cosine", linkage="complete"
     )
     clustering.fit(X)
     return len(set(clustering.labels_))
@@ -68,7 +69,7 @@ def obradi_snimku(putanja: str, baza: dict,
                   sr: int = 16000,
                   trajanje: float = 1.5,
                   preklapanje: float = 0.3,
-                  prop_decrease: float = 0.75,
+                  prop_decrease: float = 0.0,
                   vad_top_db: float = 25,
                   vad_min_duljina: float = 0.3,
                   vad_spajanje: float = 0.15,
@@ -77,24 +78,33 @@ def obradi_snimku(putanja: str, baza: dict,
     Vraca (prepoznati, segmenti, uljezi_seg, n_govornika).
     segmenti = lista (poc, kraj, student, dist, status)
     """
-    signal = ucitaj_signal(putanja, sr, prop_decrease)
+    from predobrada import ucitaj_sirovi_signal, ukloni_sum, normaliziraj_segment
 
-    vad_seg = vad_segmentacija(signal, sr, vad_top_db, vad_min_duljina, vad_spajanje)
+    # Isti preprocessing pipeline kao za bazu:
+    # resample → denoising → VAD → normalizacija po segmentu
+    signal, vad_seg = predobradi_signal(
+        putanja, sr, prop_decrease,
+        vad_top_db, vad_min_duljina, vad_spajanje
+    )
+
     if not vad_seg:
-        return set(), [], 0, 0
+        return [], [], 0, 0
 
     svi_segmenti    = []
     embeddinzi_svih = []
     uljezi_seg      = 0
 
+    offset = 0
     for poc, kraj in vad_seg:
-        seg = signal[int(poc * sr):int(kraj * sr)]
+        duljina = int((kraj - poc) * sr)
+        seg = signal[offset:offset + duljina]
+        offset += duljina
+        if len(seg) == 0:
+            continue
         emb = izvuci_embedding_sa_segmentacijom(seg, sr, trajanje, preklapanje)
         embeddinzi_svih.append(emb)
         student, dist, status = identificiraj(emb, baza, prag_donji, prag_gornji)
         svi_segmenti.append((poc, kraj, student, dist, status))
-
-    n_govornika = procijeni_broj_govornika(embeddinzi_svih, clustering_prag)
 
     # Zadrzavamo samo najbolji segment po studentu
     najbolji_po_studentu = {}
@@ -106,7 +116,8 @@ def obradi_snimku(putanja: str, baza: dict,
             najbolji_po_studentu[student] = (poc, kraj, dist, status)
 
     filtrirani = []
-    prepoznati = set()
+    prepoznati = []
+    vidjeni    = set()  # Za deduplikaciju
     for poc, kraj, student, dist, status in svi_segmenti:
         if student is None:
             filtrirani.append((poc, kraj, None, dist, status))
@@ -115,7 +126,12 @@ def obradi_snimku(putanja: str, baza: dict,
             if best and best[0] == poc and best[1] == kraj:
                 filtrirani.append((poc, kraj, student, dist, status))
                 if status in ("SIGURAN", "NESIGURAN"):
-                    prepoznati.add(student)
+                    if student not in vidjeni:
+                        prepoznati.append(student)
+                        vidjeni.add(student)
+
+    # Broj govornika = broj jedinstveno identificiranih + ima li uljeza
+    n_govornika = len(set(prepoznati)) + (1 if uljezi_seg > 0 else 0)
 
     return prepoznati, filtrirani, uljezi_seg, n_govornika
 
@@ -138,31 +154,40 @@ def spremi_rezultate(prisutnost: dict, svi_rezultati: dict,
     datum_vrijeme = timestamp or datetime.now().strftime("%d.%m.%Y. u %H:%M:%S")
     prisutni  = [ime for ime, p in prisutnost.items() if p]
     nedostaju = [ime for ime, p in prisutnost.items() if not p]
-    sep = "-" * 30 + "\n"
+    sep = "=" * 55 + "\n"
 
     with open(putanja, "w", encoding="utf-8") as f:
         f.write(f"Analiza provedena: {datum_vrijeme}\n")
         f.write(sep)
         for naziv, (prepoznati, segmenti, _, n_gov) in svi_rezultati.items():
             f.write(f"Snimka: {naziv}\n")
+            f.write("\n")
             f.write(f"  Procijenjeni broj govornika: {n_gov}\n")
+            f.write("\n")
             for poc, kraj, student, dist, status in segmenti:
                 ime    = student if student else "NEPOZNAT"
                 oznaka = "?" if status == "NESIGURAN" else ("+" if student else "!")
                 f.write(f"  [{oznaka}] {fmt_s(poc)} - {fmt_s(kraj)}"
                         f"  {ime} (dist={dist:.4f}, {status})\n")
-            f.write(f"  Prepoznati: {', '.join(sorted(prepoznati)) if prepoznati else 'nitko'}\n")
+            f.write("\n")
+            f.write(f"  Prepoznati: {', '.join(prepoznati) if prepoznati else 'nitko'}\n")
+            f.write("\n")
+
+            # Popis prisutnosti po snimci
+            prepoznati_set = set(prepoznati)
+            nedostaju_sn   = sorted(set(prisutnost.keys()) - prepoznati_set)
+            f.write(f"  Prisutni na snimci ({len(prepoznati_set)}/{len(prisutnost)}):\n")
+            for ime in prepoznati:
+                f.write(f"    + {ime}\n")
+            f.write("\n")
+            if nedostaju_sn:
+                f.write(f"  Nisu na snimci:\n")
+                for ime in nedostaju_sn:
+                    f.write(f"    - {ime}\n")
+            f.write("\n")
             f.write(sep)
-        f.write(f"Ukupno prisutnih: {len(prisutni)}/{len(prisutnost)}\n")
-        for ime in prisutni:
-            f.write(f"  + {ime}\n")
-        f.write(sep)
-        f.write("Studenti koji nedostaju:\n")
-        if nedostaju:
-            for ime in nedostaju:
-                f.write(f"  - {ime}\n")
-        else:
-            f.write("  SVI SU STUDENTI PRISUTNI\n")
+
+
 
 
 # ================================================================
@@ -172,13 +197,14 @@ def spremi_excel(prisutnost: dict, svi_rezultati: dict,
                  putanja: str = "prisutnost.xlsx",
                  timestamp: str = None):
     """
-    Sprema rezultate u Excel tablicu s bojama (zelena/crvena)
-    slicno GUI prikazu.
-    Instalacija: pip install openpyxl
+    Sprema rezultate u Excel tablicu s bojama.
+    List 1: Matrica studenti x snimke (zeleno = prisutan, crveno = odsutan)
+    List 2: Detalji segmenata po snimci
     """
     try:
         from openpyxl import Workbook
         from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+        from openpyxl.utils import get_column_letter
     except ImportError:
         print("  GREŠKA: Instaliraj openpyxl: pip install openpyxl")
         return
@@ -189,145 +215,206 @@ def spremi_excel(prisutnost: dict, svi_rezultati: dict,
     wb = Workbook()
 
     # ================================================================
-    # List 1: Popis prisutnosti
+    # PALETA BOJA (konzistentno s GUI-jem)
     # ================================================================
-    ws1 = wb.active
-    ws1.title = "Popis prisutnosti"
-
-    # Boje
-    fill_success  = PatternFill("solid", fgColor="3d7a42")
-    fill_danger   = PatternFill("solid", fgColor="7a3d3d")
+    fill_success   = PatternFill("solid", fgColor="3d7a42")
+    fill_warn_3    = PatternFill("solid", fgColor="2a6a2a")   # 66-99%
+    fill_warn_2    = PatternFill("solid", fgColor="6a6a10")   # 33-66%
+    fill_warn_1    = PatternFill("solid", fgColor="7a4a1a")   # 1-33%
+    fill_danger    = PatternFill("solid", fgColor="7a3d3d")
     fill_zaglavlje = PatternFill("solid", fgColor="1e1e1e")
-    fill_header   = PatternFill("solid", fgColor="2a2a2a")
+    fill_header    = PatternFill("solid", fgColor="2a2a2a")
+    fill_sub       = PatternFill("solid", fgColor="333333")
+    fill_nesiguran = PatternFill("solid", fgColor="7a5c2a")
 
-    font_bijeli_bold = Font(color="e8e8e8", bold=True, name="Calibri", size=11)
-    font_success     = Font(color="7ecf85", bold=True, name="Calibri", size=11)
-    font_danger      = Font(color="cf7e7e", bold=True, name="Calibri", size=11)
-    font_mute        = Font(color="888888", name="Calibri", size=10)
+    font_naslov      = Font(color="e8e8e8", bold=True,  name="Calibri", size=14)
+    font_bijeli_bold = Font(color="e8e8e8", bold=True,  name="Calibri", size=11)
+    font_bijeli      = Font(color="e8e8e8", bold=False, name="Calibri", size=10)
+    font_success     = Font(color="7ecf85", bold=True,  name="Calibri", size=11)
+    font_warn_3      = Font(color="7ecf85", bold=True,  name="Calibri", size=11)
+    font_warn_2      = Font(color="d4d44a", bold=True,  name="Calibri", size=11)
+    font_warn_1      = Font(color="e8943a", bold=True,  name="Calibri", size=11)
 
-    tanki_rub = Side(style="thin", color="3d3d3d")
-    rub = Border(left=tanki_rub, right=tanki_rub, top=tanki_rub, bottom=tanki_rub)
+    def boja_prisutnosti(n, ukupno):
+        """Vraća (fill, font) ovisno o omjeru n/ukupno — konzistentno s GUI-jem."""
+        if ukupno == 0 or n == 0:
+            return fill_danger, font_danger
+        omjer = n / ukupno
+        if omjer == 1.0:
+            return fill_success, font_success
+        elif omjer >= 0.66:
+            return fill_warn_3, font_warn_3
+        elif omjer >= 0.33:
+            return fill_warn_2, font_warn_2
+        else:
+            return fill_warn_1, font_warn_1
 
-    centralno = Alignment(horizontal="center", vertical="center")
-    lijevo    = Alignment(horizontal="left",   vertical="center")
+    font_naslov      = Font(color="e8e8e8", bold=True,  name="Calibri", size=14)
+    font_bijeli_bold = Font(color="e8e8e8", bold=True,  name="Calibri", size=11)
+    font_bijeli      = Font(color="e8e8e8", bold=False, name="Calibri", size=10)
+    font_success     = Font(color="7ecf85", bold=True,  name="Calibri", size=11)
+    font_danger      = Font(color="cf7e7e", bold=True,  name="Calibri", size=11)
+    font_mute        = Font(color="888888",              name="Calibri", size=10)
+    font_nesig       = Font(color="f0c080",              name="Calibri", size=10)
+    font_warn        = Font(color="f0a030", bold=True,  name="Calibri", size=11)
 
-    # Naslov
-    ws1.merge_cells("A1:D1")
-    ws1["A1"] = "Sustav za popisivanje studenata — Popis prisutnosti"
-    ws1["A1"].fill      = fill_zaglavlje
-    ws1["A1"].font      = Font(color="e8e8e8", bold=True, name="Calibri", size=13)
-    ws1["A1"].alignment = centralno
-    ws1.row_dimensions[1].height = 30
+    tanki  = Side(style="thin",   color="555555")
+    srednji = Side(style="medium", color="888888")
+    rub    = Border(left=tanki,  right=tanki,  top=tanki,    bottom=tanki)
+    rub_jaci = Border(left=srednji, right=srednji, top=srednji, bottom=srednji)
 
-    ws1.merge_cells("A2:D2")
-    ws1["A2"] = f"Analiza provedena: {datum_vrijeme}"
-    ws1["A2"].fill      = fill_zaglavlje
-    ws1["A2"].font      = font_mute
-    ws1["A2"].alignment = centralno
+    cen  = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    lij  = Alignment(horizontal="left",   vertical="center")
+    lij_w = Alignment(horizontal="left",  vertical="center", wrap_text=True)
+
+    studenti = sorted(prisutnost.keys())
+    snimke   = list(svi_rezultati.keys())
+    n_cols   = len(snimke) + 2  # +1 student, +1 ukupno
+
+    # ================================================================
+    # LIST 1: Matrica prisutnosti
+    # ================================================================
+    ws1       = wb.active
+    ws1.title = "Prisutnost po snimci"
+    ws1.sheet_view.showGridLines = False
+
+    # --- Naslov ---
+    ws1.merge_cells(start_row=1, start_column=1, end_row=1, end_column=n_cols)
+    c = ws1.cell(1, 1, value="Sustav za popisivanje studenata")
+    c.fill = fill_zaglavlje; c.font = font_naslov; c.alignment = cen
+    ws1.row_dimensions[1].height = 36
+
+    ws1.merge_cells(start_row=2, start_column=1, end_row=2, end_column=n_cols)
+    c = ws1.cell(2, 1, value=f"Analiza provedena: {datum_vrijeme}  |  Studenata: {len(studenti)}  |  Snimki: {len(snimke)}")
+    c.fill = fill_zaglavlje; c.font = font_mute; c.alignment = cen
     ws1.row_dimensions[2].height = 20
 
-    # Zaglavlje tablice
-    zaglavlja = ["Student", "Prisutan", "Status", "Distanca"]
-    for col, zag in enumerate(zaglavlja, 1):
-        c = ws1.cell(row=3, column=col, value=zag)
-        c.fill      = fill_header
-        c.font      = font_bijeli_bold
-        c.alignment = centralno
-        c.border    = rub
-    ws1.row_dimensions[3].height = 22
+    # --- Prazni red ---
+    ws1.row_dimensions[3].height = 8
+    for col in range(1, n_cols + 1):
+        ws1.cell(3, col).fill = fill_zaglavlje
 
-    # Podaci
-    for row, (ime, prisutan) in enumerate(sorted(prisutnost.items()), 4):
-        oznaka = "DA" if prisutan else "NE"
-        fill   = fill_success if prisutan else fill_danger
-        font_s = font_success  if prisutan else font_danger
+    # --- Zaglavlje stupaca ---
+    c = ws1.cell(4, 1, value="Student")
+    c.fill = fill_header; c.font = font_bijeli_bold; c.alignment = cen; c.border = rub_jaci
+    ws1.column_dimensions["A"].width = 18
 
-        # Pronadji min distancu za ovog studenta
-        min_dist = None
-        for naziv, (prepoznati, segmenti, _, _) in svi_rezultati.items():
-            for _, _, student, dist, status in segmenti:
-                if student == ime:
-                    if min_dist is None or dist < min_dist:
-                        min_dist = dist
+    for col, naziv in enumerate(snimke, 2):
+        # Puno ime snimke — wrapa u ćeliju
+        c = ws1.cell(4, col, value=naziv)
+        c.fill = fill_header; c.font = font_bijeli_bold
+        c.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        c.border = rub_jaci
+        ws1.column_dimensions[get_column_letter(col)].width = 16
 
-        podaci = [
-            ime,
-            oznaka,
-            "Prisutan" if prisutan else "Odsutan",
-            f"{min_dist:.4f}" if min_dist is not None else "—"
-        ]
+    # Zadnji stupac — ukupno
+    col_uk = len(snimke) + 2
+    c = ws1.cell(4, col_uk, value="Ukupno\nprisutan")
+    c.fill = fill_sub; c.font = font_bijeli_bold; c.alignment = cen; c.border = rub_jaci
+    ws1.column_dimensions[get_column_letter(col_uk)].width = 12
+    ws1.row_dimensions[4].height = 52
 
-        for col, vrijednost in enumerate(podaci, 1):
-            c = ws1.cell(row=row, column=col, value=vrijednost)
-            c.fill      = fill
-            c.font      = font_s
-            c.alignment = centralno if col > 1 else lijevo
-            c.border    = rub
-        ws1.row_dimensions[row].height = 20
+    # --- Redovi studenata ---
+    for row, student in enumerate(studenti, 5):
+        c = ws1.cell(row, 1, value=student)
+        c.fill = fill_sub; c.font = font_bijeli_bold; c.alignment = lij; c.border = rub
 
-    ws1.column_dimensions["A"].width = 22
-    ws1.column_dimensions["B"].width = 12
-    ws1.column_dimensions["C"].width = 14
-    ws1.column_dimensions["D"].width = 14
+        ukupno_prisutan = 0
+        for col, naziv in enumerate(snimke, 2):
+            prepoznati_sn, _, _, _ = svi_rezultati[naziv]
+            prisutan = student in prepoznati_sn
+            if prisutan:
+                ukupno_prisutan += 1
+            fill_s, font_s = boja_prisutnosti(1 if prisutan else 0, 1)
+            tekst  = "✓" if prisutan else "✗"
+
+            c = ws1.cell(row, col, value=tekst)
+            c.fill = fill_s; c.font = font_s; c.alignment = cen; c.border = rub
+
+        # Stupac ukupno — dinamička boja po omjeru
+        fill_uk, font_uk = boja_prisutnosti(ukupno_prisutan, len(snimke))
+        c = ws1.cell(row, col_uk, value=f"{ukupno_prisutan}/{len(snimke)}")
+        c.fill = fill_uk; c.font = font_uk; c.alignment = cen; c.border = rub
+        ws1.row_dimensions[row].height = 22
+
+    # --- Red ukupno po snimci ---
+    row_uk = len(studenti) + 5
+    ws1.row_dimensions[row_uk].height = 22
+    c = ws1.cell(row_uk, 1, value="Ukupno na snimci")
+    c.fill = fill_sub; c.font = font_bijeli_bold; c.alignment = lij; c.border = rub_jaci
+
+    for col, naziv in enumerate(snimke, 2):
+        prepoznati_sn, _, _, _ = svi_rezultati[naziv]
+        n = len(prepoznati_sn)
+        fill_s, font_s = boja_prisutnosti(n, len(studenti))
+        c = ws1.cell(row_uk, col, value=f"{n}/{len(studenti)}")
+        c.fill = fill_s; c.font = font_s; c.alignment = cen; c.border = rub_jaci
+
+    ws1.cell(row_uk, col_uk).fill = fill_zaglavlje
+    ws1.cell(row_uk, col_uk).border = rub_jaci
+
+    ws1.freeze_panes = "B5"
 
     # ================================================================
-    # List 2: Detalji po snimci
+    # LIST 2: Detalji po snimci
     # ================================================================
-    ws2 = wb.create_sheet("Detalji po snimci")
+    ws2       = wb.create_sheet("Detalji po snimci")
+    ws2.sheet_view.showGridLines = False
 
-    ws2.merge_cells("A1:F1")
-    ws2["A1"] = "Detalji analize po snimci"
-    ws2["A1"].fill      = fill_zaglavlje
-    ws2["A1"].font      = Font(color="e8e8e8", bold=True, name="Calibri", size=13)
-    ws2["A1"].alignment = centralno
-    ws2.row_dimensions[1].height = 30
+    ws2.merge_cells("A1:G1")
+    c = ws2.cell(1, 1, value="Detalji analize po snimci")
+    c.fill = fill_zaglavlje; c.font = font_naslov; c.alignment = cen
+    ws2.row_dimensions[1].height = 36
 
-    zaglavlja2 = ["Snimka", "Pocetak", "Kraj", "Trajanje (s)", "Govornik", "Status"]
+    ws2.merge_cells("A2:G2")
+    c = ws2.cell(2, 1, value=f"Analiza provedena: {datum_vrijeme}")
+    c.fill = fill_zaglavlje; c.font = font_mute; c.alignment = cen
+    ws2.row_dimensions[2].height = 20
+
+    ws2.row_dimensions[3].height = 8
+    for col in range(1, 8):
+        ws2.cell(3, col).fill = fill_zaglavlje
+
+    zaglavlja2 = ["Snimka", "Početak", "Kraj", "Trajanje (s)", "Govornik", "Distanca", "Status"]
     for col, zag in enumerate(zaglavlja2, 1):
-        c = ws2.cell(row=2, column=col, value=zag)
-        c.fill      = fill_header
-        c.font      = font_bijeli_bold
-        c.alignment = centralno
-        c.border    = rub
-    ws2.row_dimensions[2].height = 22
+        c = ws2.cell(4, col, value=zag)
+        c.fill = fill_header; c.font = font_bijeli_bold
+        c.alignment = cen; c.border = rub_jaci
+    ws2.row_dimensions[4].height = 28
 
-    fill_siguran   = PatternFill("solid", fgColor="3d7a42")
-    fill_nesiguran = PatternFill("solid", fgColor="7a5c2a")
-    fill_uljez     = PatternFill("solid", fgColor="7a3d3d")
+    ws2.column_dimensions["A"].width = 30
+    ws2.column_dimensions["B"].width = 11
+    ws2.column_dimensions["C"].width = 11
+    ws2.column_dimensions["D"].width = 13
+    ws2.column_dimensions["E"].width = 16
+    ws2.column_dimensions["F"].width = 12
+    ws2.column_dimensions["G"].width = 14
 
-    trenutni_red = 3
+    trenutni_red = 5
     for naziv, (prepoznati, segmenti, _, n_gov) in svi_rezultati.items():
         for poc, kraj, student, dist, status in segmenti:
             ime_studenta = student if student else "NEPOZNAT"
 
             if status == "SIGURAN":
-                fill_s = fill_siguran
-                font_s = font_success
+                fill_s = fill_success; font_s = font_success
             elif status == "NESIGURAN":
-                fill_s = fill_nesiguran
-                font_s = Font(color="f0c080", bold=False, name="Calibri", size=10)
+                fill_s = fill_nesiguran; font_s = font_nesig
             else:
-                fill_s = fill_uljez
-                font_s = font_danger
+                fill_s = fill_danger; font_s = font_danger
 
-            podaci2 = [naziv, fmt_s(poc), fmt_s(kraj),
-                       f"{(kraj-poc):.1f}", ime_studenta, status]
+            vrijednosti = [naziv, fmt_s(poc), fmt_s(kraj),
+                           f"{(kraj-poc):.1f}", ime_studenta,
+                           f"{dist:.4f}", status]
 
-            for col, vrijednost in enumerate(podaci2, 1):
-                c = ws2.cell(row=trenutni_red, column=col, value=vrijednost)
-                c.fill      = fill_s
-                c.font      = font_s
-                c.alignment = centralno if col > 1 else lijevo
-                c.border    = rub
+            for col, vrijednost in enumerate(vrijednosti, 1):
+                c = ws2.cell(trenutni_red, col, value=vrijednost)
+                c.fill = fill_s; c.font = font_s
+                c.alignment = cen if col != 1 else lij
+                c.border = rub
             ws2.row_dimensions[trenutni_red].height = 18
             trenutni_red += 1
 
-    ws2.column_dimensions["A"].width = 26
-    ws2.column_dimensions["B"].width = 12
-    ws2.column_dimensions["C"].width = 12
-    ws2.column_dimensions["D"].width = 14
-    ws2.column_dimensions["E"].width = 18
-    ws2.column_dimensions["F"].width = 14
+    ws2.freeze_panes = "A5"
 
     wb.save(putanja)
     print(f"  Excel tablica spremljena: {putanja}")
