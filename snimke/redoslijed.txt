@@ -1,0 +1,15 @@
+1.snimka = soldo, rasic, dikic, strnad, perkovic
+2.snimka = perkovic, strnad, dikic, rasic, soldo
+3.snimka = dikic, soldo, strnad, rasic, perkovic
+4.snimka = perkovic, strnad, horvat, coric, rasic, dikic, soldo
+5.snimka = dikic, rasic, coric, horvat, strnad, perkovic, soldo
+6.snimka = soldo, coric, strnad, horvat, rasic, dikic, perkovic
+7.snimka = soldo, strnad, lapac, perkovic, coric, horvat, rasic, dikic
+8.snimka = lapac, horvat, dikic, soldo, coric, strnad, perkovic, rasic
+9.snimka = coric, perkovic, strnad, horvat, dikic, lapac, rasic, soldo
+10.snimka = horvat, coric, rasic, lapac, soldo, strnad, dikic, perkovic
+11.snimka = coric, dikic, lapac, perkovic, rasic, soldo
+12.snimka = lapac, soldo, dikic, perkovic, rasic, coric
+13.snimka = rasic, perkovic, coric, dikic, soldo, lapac
+14.snimka = strnad, dikic, coric, soldo, perkovic, rasic, lapac
+15.snimka = rasic, lapac, soldo, strnad, dikic, perkovic, coric
