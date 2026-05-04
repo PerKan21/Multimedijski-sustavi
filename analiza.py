@@ -1,16 +1,15 @@
 """
 Identifikacija govornika i obrada snimki
 =========================================
-Identifikacija VAD segmenata, clustering za broj govornika,
+Identifikacija VAD segmenata, agregacija rezultata
 agregacija rezultata i spremanje u datoteku.
 """
 
 import os
 import numpy as np
 from datetime import datetime
-from sklearn.cluster import AgglomerativeClustering
 
-from predobrada import predobradi_signal, vad_segmentacija, normaliziraj_segment
+from predobrada import predobradi_signal, normaliziraj_segment
 from model import izvuci_embedding_sa_segmentacijom, izvuci_embedding_iz_signala
 
 
@@ -42,46 +41,81 @@ def identificiraj(embedding_ulaz: np.ndarray, baza: dict,
 
 
 # ================================================================
-# CLUSTERING - procjena broja govornika
-# ================================================================
-def procijeni_broj_govornika(embeddinzi: list, prag: float = 0.08) -> int:
-    """
-    Agglomerative clustering embeddinga VAD segmenata —
-    procjenjuje koliko razlicitih govornika ima na snimci.
-    Koristi 'complete' linkage — osjetljivije na razlike između govornika.
-    """
-    if len(embeddinzi) < 2:
-        return len(embeddinzi)
-    X = np.array(embeddinzi)
-    clustering = AgglomerativeClustering(
-        n_clusters=None, distance_threshold=prag,
-        metric="cosine", linkage="complete"
-    )
-    clustering.fit(X)
-    return len(set(clustering.labels_))
-
-
-# ================================================================
 # OBRADA JEDNE SNIMKE
 # ================================================================
-def obradi_snimku(putanja: str, baza: dict,
-                  prag_donji: float, prag_gornji: float,
-                  sr: int = 16000,
-                  trajanje: float = 1.5,
-                  preklapanje: float = 0.3,
-                  prop_decrease: float = 0.0,
-                  vad_top_db: float = 25,
-                  vad_min_duljina: float = 0.3,
-                  vad_spajanje: float = 0.15,
-                  clustering_prag: float = 0.25) -> tuple:
-    """
-    Vraca (prepoznati, segmenti, uljezi_seg, n_govornika).
-    segmenti = lista (poc, kraj, student, dist, status)
-    """
-    from predobrada import ucitaj_sirovi_signal, ukloni_sum, normaliziraj_segment
 
-    # Isti preprocessing pipeline kao za bazu:
-    # resample → denoising → VAD → normalizacija po segmentu
+# ================================================================
+# DIARIZACIJA — pyannote-community model
+# ================================================================
+_diar_pipeline = None
+
+
+def ucitaj_diarizaciju():
+    """Učitava pyannote pipeline jednom i drži u memoriji."""
+    global _diar_pipeline
+    if _diar_pipeline is not None:
+        return _diar_pipeline
+    import warnings
+    warnings.filterwarnings("ignore")
+    from pyannote.audio import Pipeline
+    print("  Učitavanje pyannote diarizacijskog modela...")
+    _diar_pipeline = Pipeline.from_pretrained(
+        "pyannote-community/speaker-diarization-community-1"
+    )
+    print("  Diarizacijski model učitan.")
+    return _diar_pipeline
+
+
+def diarizacija_segmenti(putanja: str, sr: int,
+                          n_govornika: int = None) -> tuple:
+    """
+    Koristi pyannote za segmentaciju snimke po govorniku.
+    Vraća (signal_numpy, lista[(poc, kraj, speaker_label)]).
+    """
+    import torch
+    import librosa as _librosa
+    pipeline = ucitaj_diarizaciju()
+
+    # Tune parametara za kraće segmente
+    try:
+        pipeline.min_duration_off = 0.0
+        pipeline.min_duration_on  = 0.1
+    except Exception:
+        pass
+
+    signal, _ = _librosa.load(putanja, sr=sr, mono=True)
+    waveform   = torch.tensor(signal).unsqueeze(0).float()
+    audio_dict = {"waveform": waveform, "sample_rate": sr}
+
+    kwargs = {}
+    if n_govornika:
+        kwargs["num_speakers"] = n_govornika
+
+    try:
+        rezultat = pipeline(audio_dict, **kwargs)
+    except ValueError:
+        rezultat = pipeline(audio_dict)
+
+    segmenti = []
+    for segment, _, govornik in rezultat.speaker_diarization.itertracks(yield_label=True):
+        segmenti.append((segment.start, segment.end, govornik))
+
+    return signal, segmenti
+
+
+# ================================================================
+# OBRADA — VAD MOD
+# ================================================================
+def obradi_snimku_vad(putanja: str, baza: dict,
+                       prag_donji: float, prag_gornji: float,
+                       sr: int = 16000,
+                       trajanje: float = 2.0,
+                       preklapanje: float = 1.0,
+                       prop_decrease: float = 0.0,
+                       vad_top_db: float = 25,
+                       vad_min_duljina: float = 0.5,
+                       vad_spajanje: float = 0.5) -> tuple:
+    """Identifikacija govornika s VAD segmentacijom."""
     signal, vad_seg = predobradi_signal(
         putanja, sr, prop_decrease,
         vad_top_db, vad_min_duljina, vad_spajanje
@@ -90,9 +124,8 @@ def obradi_snimku(putanja: str, baza: dict,
     if not vad_seg:
         return [], [], 0, 0
 
-    svi_segmenti    = []
-    embeddinzi_svih = []
-    uljezi_seg      = 0
+    svi_segmenti = []
+    uljezi_seg   = 0
 
     offset = 0
     for poc, kraj in vad_seg:
@@ -102,22 +135,65 @@ def obradi_snimku(putanja: str, baza: dict,
         if len(seg) == 0:
             continue
         emb = izvuci_embedding_sa_segmentacijom(seg, sr, trajanje, preklapanje)
-        embeddinzi_svih.append(emb)
         student, dist, status = identificiraj(emb, baza, prag_donji, prag_gornji)
         svi_segmenti.append((poc, kraj, student, dist, status))
 
-    # Zadrzavamo samo najbolji segment po studentu
+    return _filtriraj_rezultate(svi_segmenti, uljezi_seg)
+
+
+# ================================================================
+# OBRADA — DIARIZACIJA MOD
+# ================================================================
+def obradi_snimku_diar(putanja: str, baza: dict,
+                        prag_donji: float, prag_gornji: float,
+                        sr: int = 16000,
+                        trajanje: float = 2.0,
+                        preklapanje: float = 1.0,
+                        n_govornika: int = None) -> tuple:
+    """Identifikacija govornika s pyannote diarizacijom."""
+    signal, diar_seg = diarizacija_segmenti(putanja, sr, n_govornika)
+
+    if not diar_seg:
+        return [], [], 0, 0
+
+    svi_segmenti = []
+    uljezi_seg   = 0
+
+    for poc, kraj, _ in diar_seg:
+        seg = signal[int(poc * sr):int(kraj * sr)]
+        if len(seg) < int(0.3 * sr):
+            continue
+        seg = normaliziraj_segment(seg.astype(np.float32))
+        emb = izvuci_embedding_sa_segmentacijom(seg, sr, trajanje, preklapanje)
+        student, dist, status = identificiraj(emb, baza, prag_donji, prag_gornji)
+        svi_segmenti.append((poc, kraj, student, dist, status))
+
+    return _filtriraj_rezultate(svi_segmenti, uljezi_seg)
+
+
+# ================================================================
+# ZAJEDNIČKA LOGIKA FILTRIRANJA
+# ================================================================
+def _filtriraj_rezultate(svi_segmenti: list, uljezi_seg: int) -> tuple:
+    """Zadržava samo najbolji segment po studentu i gradi listu prepoznatih."""
     najbolji_po_studentu = {}
     for poc, kraj, student, dist, status in svi_segmenti:
         if student is None:
             uljezi_seg += 1
             continue
-        if student not in najbolji_po_studentu or dist < najbolji_po_studentu[student][2]:
+        if student not in najbolji_po_studentu:
             najbolji_po_studentu[student] = (poc, kraj, dist, status)
+        else:
+            prev_status = najbolji_po_studentu[student][3]
+            if status == "SIGURAN" and prev_status != "SIGURAN":
+                najbolji_po_studentu[student] = (poc, kraj, dist, status)
+            elif status == prev_status and dist < najbolji_po_studentu[student][2]:
+                najbolji_po_studentu[student] = (poc, kraj, dist, status)
 
     filtrirani = []
     prepoznati = []
-    vidjeni    = set()  # Za deduplikaciju
+    vidjeni    = set()
+
     for poc, kraj, student, dist, status in svi_segmenti:
         if student is None:
             filtrirani.append((poc, kraj, None, dist, status))
@@ -125,20 +201,41 @@ def obradi_snimku(putanja: str, baza: dict,
             best = najbolji_po_studentu.get(student)
             if best and best[0] == poc and best[1] == kraj:
                 filtrirani.append((poc, kraj, student, dist, status))
-                if status in ("SIGURAN", "NESIGURAN"):
-                    if student not in vidjeni:
-                        prepoznati.append(student)
-                        vidjeni.add(student)
+                if status in ("SIGURAN", "NESIGURAN") and student not in vidjeni:
+                    prepoznati.append(student)
+                    vidjeni.add(student)
 
-    # Broj govornika = broj jedinstveno identificiranih + ima li uljeza
     n_govornika = len(set(prepoznati)) + (1 if uljezi_seg > 0 else 0)
-
     return prepoznati, filtrirani, uljezi_seg, n_govornika
 
 
-# ================================================================
-# POMOCNA FUNKCIJA
-# ================================================================
+def obradi_snimku(putanja: str, baza: dict,
+                  prag_donji: float, prag_gornji: float,
+                  sr: int = 16000,
+                  trajanje: float = 2.0,
+                  preklapanje: float = 1.0,
+                  prop_decrease: float = 0.0,
+                  vad_top_db: float = 25,
+                  vad_min_duljina: float = 0.5,
+                  vad_spajanje: float = 0.5,
+                  mod: str = "vad",
+                  n_govornika: int = None) -> tuple:
+    """
+    Wrapper koji odabire mod segmentacije.
+    mod: "vad" (default) ili "diarizacija"
+    """
+    if mod == "diarizacija":
+        return obradi_snimku_diar(
+            putanja, baza, prag_donji, prag_gornji,
+            sr, trajanje, preklapanje, n_govornika
+        )
+    return obradi_snimku_vad(
+        putanja, baza, prag_donji, prag_gornji,
+        sr, trajanje, preklapanje, prop_decrease,
+        vad_top_db, vad_min_duljina, vad_spajanje
+    )
+
+
 def fmt_s(sekunde: float) -> str:
     m = int(sekunde // 60)
     s = sekunde % 60
@@ -227,13 +324,18 @@ def spremi_excel(prisutnost: dict, svi_rezultati: dict,
     fill_sub       = PatternFill("solid", fgColor="333333")
     fill_nesiguran = PatternFill("solid", fgColor="7a5c2a")
 
+
     font_naslov      = Font(color="e8e8e8", bold=True,  name="Calibri", size=14)
     font_bijeli_bold = Font(color="e8e8e8", bold=True,  name="Calibri", size=11)
     font_bijeli      = Font(color="e8e8e8", bold=False, name="Calibri", size=10)
     font_success     = Font(color="7ecf85", bold=True,  name="Calibri", size=11)
+    font_danger      = Font(color="cf7e7e", bold=True,  name="Calibri", size=11)
     font_warn_3      = Font(color="7ecf85", bold=True,  name="Calibri", size=11)
     font_warn_2      = Font(color="d4d44a", bold=True,  name="Calibri", size=11)
     font_warn_1      = Font(color="e8943a", bold=True,  name="Calibri", size=11)
+    font_mute        = Font(color="888888",              name="Calibri", size=10)
+    font_nesig       = Font(color="f0c080",              name="Calibri", size=10)
+    font_warn        = Font(color="f0a030", bold=True,  name="Calibri", size=11)
 
     def boja_prisutnosti(n, ukupno):
         """Vraća (fill, font) ovisno o omjeru n/ukupno — konzistentno s GUI-jem."""
@@ -249,14 +351,6 @@ def spremi_excel(prisutnost: dict, svi_rezultati: dict,
         else:
             return fill_warn_1, font_warn_1
 
-    font_naslov      = Font(color="e8e8e8", bold=True,  name="Calibri", size=14)
-    font_bijeli_bold = Font(color="e8e8e8", bold=True,  name="Calibri", size=11)
-    font_bijeli      = Font(color="e8e8e8", bold=False, name="Calibri", size=10)
-    font_success     = Font(color="7ecf85", bold=True,  name="Calibri", size=11)
-    font_danger      = Font(color="cf7e7e", bold=True,  name="Calibri", size=11)
-    font_mute        = Font(color="888888",              name="Calibri", size=10)
-    font_nesig       = Font(color="f0c080",              name="Calibri", size=10)
-    font_warn        = Font(color="f0a030", bold=True,  name="Calibri", size=11)
 
     tanki  = Side(style="thin",   color="555555")
     srednji = Side(style="medium", color="888888")

@@ -17,47 +17,78 @@ Napomena o noise reduction:
     (0.0 = isključen, 0.3 = blag, 0.75 = agresivan).
 """
 
-import subprocess
+import os
+import logging
 import numpy as np
 import librosa
 import noisereduce as nr
 import soundfile as sf
 from pydub import AudioSegment
 
-# ================================================================
-# FFMPEG SETUP
-# ================================================================
-ffmpeg_path = subprocess.run(
-    "where ffmpeg", capture_output=True, text=True, shell=True
-).stdout.strip().split("\n")[0]
-if ffmpeg_path:
-    AudioSegment.converter = ffmpeg_path
-    AudioSegment.ffprobe   = ffmpeg_path.replace("ffmpeg.exe", "ffprobe.exe")
+log = logging.getLogger(__name__)
 
 
 # ================================================================
-# KONVERZIJA - pretvara m4a/mp3/ogg u wav koji soundfile moze citati
+# FFMPEG SETUP — cross-platform (Windows, Linux, macOS)
+# ================================================================
+def _pronadji_ffmpeg() -> str:
+    """
+    Pronalazi ffmpeg na sustavu neovisno o platformi.
+    Koristi 'where' na Windowsu, 'which' na Linuxu/macOS.
+    """
+    import shutil
+    putanja = shutil.which("ffmpeg")
+    if putanja:
+        return putanja
+    return ""
+
+_ffmpeg_path = _pronadji_ffmpeg()
+if _ffmpeg_path:
+    AudioSegment.converter = _ffmpeg_path
+    # ffprobe je u istom direktoriju kao ffmpeg
+    _ffprobe = os.path.join(
+        os.path.dirname(_ffmpeg_path),
+        "ffprobe" + (".exe" if os.name == "nt" else "")
+    )
+    if os.path.exists(_ffprobe):
+        AudioSegment.ffprobe = _ffprobe
+    log.debug(f"ffmpeg pronađen: {_ffmpeg_path}")
+else:
+    log.warning("ffmpeg nije pronađen na sustavu. Konverzija ne-WAV formata neće raditi.")
+
+
+# ================================================================
+# KONVERZIJA — pretvara m4a/mp3/ogg u wav koji soundfile može čitati
+# Popravak: sprema se uz originalnu datoteku (bez nepotrebnog foldera)
 # ================================================================
 def u_wav(putanja: str) -> str:
+    """
+    Konvertira audio datoteku u WAV format ako već nije WAV.
+    Konvertirana datoteka sprema se kao <ime>_konv.wav u istom direktoriju.
+    """
     if putanja.lower().endswith(".wav"):
         return putanja
-    import os
-    dir_dat  = os.path.dirname(putanja)
-    ime_dat  = os.path.splitext(os.path.basename(putanja))[0]
-    konv_dir = os.path.join(dir_dat, f"{ime_dat}_konv")
-    os.makedirs(konv_dir, exist_ok=True)
-    wav_put  = os.path.join(konv_dir, f"{ime_dat}.wav")
+
+    dir_dat = os.path.dirname(putanja)
+    ime_dat = os.path.splitext(os.path.basename(putanja))[0]
+    wav_put = os.path.join(dir_dat, f"{ime_dat}_konv.wav")
+
     if not os.path.exists(wav_put):
-        AudioSegment.from_file(putanja).export(wav_put, format="wav")
+        try:
+            AudioSegment.from_file(putanja).export(wav_put, format="wav")
+            log.debug(f"Konvertirano: {putanja} -> {wav_put}")
+        except Exception as e:
+            raise RuntimeError(f"Greška pri konverziji '{putanja}' u WAV: {e}") from e
+
     return wav_put
 
 
 # ================================================================
-# UCITAVANJE SIGNALA - resample + mono
-# Samo tehnicka konverzija, bez ikakvog preprocessinga
+# UCITAVANJE SIGNALA — resample + mono
+# Samo tehnička konverzija, bez ikakvog preprocessinga
 # ================================================================
 def ucitaj_sirovi_signal(putanja: str, sr_ciljni: int) -> np.ndarray:
-    """Ucitava audio datoteku i pretvara u mono 16kHz. Bez preprocessinga."""
+    """Učitava audio datoteku i pretvara u mono signal ciljanog SR. Bez preprocessinga."""
     putanja = u_wav(putanja)
     signal, sr = sf.read(putanja)
     signal = np.array(signal, dtype=np.float32)
@@ -70,15 +101,15 @@ def ucitaj_sirovi_signal(putanja: str, sr_ciljni: int) -> np.ndarray:
 
 # ================================================================
 # OPCIONALNI DENOISING
-# Blag denoising moze pomoci, ali agresivni moze pokvariti
+# Blag denoising može pomoći, ali agresivni može pokvariti
 # fine spektralne detalje koje ECAPA-TDNN koristi.
-# prop_decrease=0.0 znaci iskljucen.
+# prop_decrease=0.0 znači isključen.
 # ================================================================
 def ukloni_sum(signal: np.ndarray, sr: int, prop_decrease: float = 0.0) -> np.ndarray:
     """
-    Opcionalna redukcija suma. Default je 0.0 (iskljuceno).
+    Opcionalna redukcija šuma. Default je 0.0 (isključeno).
     Ako je prop_decrease > 0, koristi ne-govorni dio signala
-    za procjenu suma umjesto fiksnih prvih 0.5s.
+    za procjenu šuma umjesto fiksnih prvih 0.5s.
     """
     if prop_decrease <= 0.0:
         return signal
@@ -101,18 +132,12 @@ def normaliziraj_segment(signal: np.ndarray) -> np.ndarray:
 
 
 # ================================================================
-# VAD - detekcija i izlucivanje govornih segmenata
-#
-# Redoslijed koji preporucuje literatura za ECAPA-TDNN:
-#   1. VAD detektira gdje ima govora
-#   2. Spoji bliske segmente (ista pauza unutar rijeci)
-#   3. Filtriraj prekratke segmente
-#   4. Normaliziraj svaki segment zasebno
+# VAD — detekcija i izlučivanje govornih segmenata
 # ================================================================
 def vad_segmentacija(signal: np.ndarray, sr: int,
                      top_db: float, min_duljina: float, spajanje: float) -> list:
     """
-    Vraca listu (pocetak_s, kraj_s) govornih segmenata.
+    Vraća listu (pocetak_s, kraj_s) govornih segmenata.
     """
     intervali = librosa.effects.split(
         signal, top_db=top_db, frame_length=512, hop_length=128
@@ -135,17 +160,7 @@ def vad_segmentacija(signal: np.ndarray, sr: int,
 
 
 # ================================================================
-# GLAVNI PIPELINE - isti za bazu i za ulazne snimke
-#
-# Ovaj redoslijed je konzistentan s preporukama za ECAPA-TDNN:
-#   1. Ucitaj i resample
-#   2. Opcionalni denoising (default: iskljucen)
-#   3. VAD — ukloni tišinu, izluci govorne segmente
-#   4. Normalizacija po segmentu
-#   5. Spoji segmente u jedan signal
-#
-# Vraca: (procisceni_signal, lista_vad_segmenata)
-# Ako nema VAD segmenata, vraca cijeli signal normaliziran.
+# GLAVNI PIPELINE — isti za bazu i za ulazne snimke
 # ================================================================
 def predobradi_signal(putanja: str, sr: int,
                       prop_decrease: float,
@@ -153,13 +168,13 @@ def predobradi_signal(putanja: str, sr: int,
                       vad_spajanje: float) -> tuple:
     """
     Glavni preprocessing pipeline — isti za bazu i ulazne snimke.
-    Vraca (signal, vad_segmenti) gdje je signal ociscen od tisine
+    Vraća (signal, vad_segmenti) gdje je signal očišćen od tišine
     i normaliziran po segmentu.
     """
-    # 1. Ucitaj i resample
+    # 1. Učitaj i resample
     signal = ucitaj_sirovi_signal(putanja, sr)
 
-    # 2. Opcionalni denoising (default: iskljucen)
+    # 2. Opcionalni denoising (default: isključen)
     signal = ukloni_sum(signal, sr, prop_decrease)
 
     # 3. VAD — detektira govorne segmente
@@ -167,9 +182,10 @@ def predobradi_signal(putanja: str, sr: int,
 
     if not vad_seg:
         # Nema detektiranog govora — normaliziraj cijeli signal
+        log.warning(f"VAD nije detektirao govor u '{putanja}', koristi se cijeli signal.")
         return normaliziraj_segment(signal), []
 
-    # 4. Izluci segmente, normaliziraj svaki zasebno i spoji
+    # 4. Izluči segmente, normaliziraj svaki zasebno i spoji
     segmenti_signala = []
     for poc, kraj in vad_seg:
         seg = signal[int(poc * sr):int(kraj * sr)]
@@ -180,12 +196,12 @@ def predobradi_signal(putanja: str, sr: int,
 
 
 # ================================================================
-# LEGACY - zadrzano zbog kompatibilnosti s postojecim pozivima
+# LEGACY — zadržano zbog kompatibilnosti s postojećim pozivima
 # ================================================================
 def ucitaj_signal(putanja: str, sr_ciljni: int, prop_decrease: float) -> np.ndarray:
     """
     Backwards-compatible wrapper. Koristi predobradi_signal interno.
-    Preporucuje se koristiti predobradi_signal direktno.
+    Preporučuje se koristiti predobradi_signal direktno.
     """
     signal, _ = predobradi_signal(
         putanja, sr_ciljni, prop_decrease,

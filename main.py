@@ -6,21 +6,45 @@ Za GUI pokretanje koristi: python gui.py
 
 Instalacija:
     pip install transformers torch soundfile librosa pydub noisereduce tqdm scikit-learn
-"""
+
+    4.5.2026. - KV - 10. tjedan - log
+    -----------------------------------------
+    Sve osim uljeza je u redu. Treba implementirati da uljeze uhvati kako treba
+     (vjerojatno problem s VAD segmentacijom zbog duljine segmenta i slicno).
+
+     Probati diarizaciju još jednom i vidjeti koliko zapravo pomaze (trebalo bi pomagati).
+
+     GUI je u redu, izvoz rezultata u Excel i .txt datoteku je ispravno.
+
+     Vise uljeza ubaciti u snimke?
+
+    """
 
 import os
+import logging
+
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 os.environ["HF_DATASETS_OFFLINE"]  = "1"
 
 import warnings
 warnings.filterwarnings("ignore")
 
+# ================================================================
+# LOGIRANJE — centralno postavljeno ovdje, koriste sve module
+# ================================================================
+logging.basicConfig(
+    level=logging.WARNING,
+    format="[%(levelname)s] %(name)s: %(message)s"
+)
+# Postavi na DEBUG za detaljne poruke:
+# logging.getLogger().setLevel(logging.DEBUG)
+
 from tqdm import tqdm
 from analiza import obradi_snimku, spremi_rezultate, spremi_excel, fmt_s
 from model import ucitaj_model, ucitaj_bazu, izracunaj_pragove
 
 # ================================================================
-# POSTAVKE - sve konfiguracijske varijable na jednom mjestu
+# POSTAVKE — sve konfiguracijske varijable na jednom mjestu
 # ================================================================
 SR               = 16000
 DIR_BAZA         = "baza"
@@ -29,13 +53,13 @@ PODRZANI_FORMATI = (".wav", ".mp3", ".m4a", ".ogg", ".flac", ".mp4")
 CACHE_PUTANJA    = "baza_cache.pkl"
 
 # --- Segmentacija (i za bazu i za VAD segmente) ---
-SEGMENT_TRAJANJE    = 1.5    # Duljina jednog segmenta (sekunde)
-SEGMENT_PREKLAPANJE = 0.3    # Preklapanje između segmenata (sekunde)
+SEGMENT_TRAJANJE    = 2.0    # Duljina jednog segmenta (sekunde)
+SEGMENT_PREKLAPANJE = 1.0    # Preklapanje između segmenata (sekunde)
 
 # --- VAD: detekcija govora u ulaznim snimkama ---
-VAD_TOP_DB      = 25         # Prag energije ispod kojeg = tišina (dB)
-VAD_MIN_DULJINA = 0.3        # Minimalna duljina govornog segmenta (sekunde)
-VAD_SPAJANJE    = 0.15       # Spoji segmente bliže od ovoga (sekunde)
+VAD_TOP_DB      = 25         # Prag energije ispod kojeg = tišina (dB), original 25
+VAD_MIN_DULJINA = 0.5        # Minimalna duljina govornog segmenta (sekunde), original 0.3
+VAD_SPAJANJE    = 0.5       # Spoji segmente bliže od ovoga (sekunde), original 0.15
 
 # --- Predobrada signala ---
 SUM_PROP_DECREASE = 0.75     # Agresivnost redukcije šuma (0-1)
@@ -44,21 +68,26 @@ SUM_PROP_DECREASE = 0.75     # Agresivnost redukcije šuma (0-1)
 # dist <= prag_donji               -> [+] SIGURAN
 # prag_donji < dist <= prag_gornji -> [?] NESIGURAN
 # dist > prag_gornji               -> [!] ULJEZ
-FAKTOR_GORNJEG_PRAGA = 2.0   # Gornji prag = donji * ovaj faktor
+FAKTOR_GORNJEG_PRAGA = 2.5   # Gornji prag = donji * ovaj faktor, original 2.0
 
 # Fiksni pragovi — postavi na float između 0.0 i 1.0 za fiksni prag,
-# ili None (ili bilo što drugo) za dinamički izračun iz baze
+# ili None za dinamički izračun iz baze
 FIKSNI_PRAG_DONJI  = None   # npr. 0.12 za fiksni, None za dinamički
 FIKSNI_PRAG_GORNJI = None   # npr. 0.22 za fiksni, None za dinamički
 
-# --- Clustering: procjena broja govornika ---
-CLUSTERING_PRAG = 0.08
+# --- Mod segmentacije ---
+# "vad"         — klasični VAD (brže, radi bez interneta)
+# "diarizacija" — pyannote neural diarizacija (sporije, bolja segmentacija)
+MOD_SEGMENTACIJE        = "vad"
+DIARIZACIJA_N_GOVORNIKA = None   # None = automatski, ili npr. 6
+
+
 
 def primijeni_pragove(prag_donji: float, prag_gornji: float) -> tuple:
     """
     Ako su FIKSNI_PRAG_DONJI / FIKSNI_PRAG_GORNJI postavljeni na
     vrijednost između 0.0 i 1.0, koristi ih umjesto dinamičkih.
-    Gornji prag se uvijek računa iz konačnog donjeg praga * faktor,
+    Gornji prag se uvijek računa iz konačnog donjeg praga × faktor,
     osim ako je i gornji eksplicitno postavljen.
     """
     d = prag_donji
@@ -66,7 +95,7 @@ def primijeni_pragove(prag_donji: float, prag_gornji: float) -> tuple:
 
     if isinstance(FIKSNI_PRAG_DONJI, float) and 0.0 < FIKSNI_PRAG_DONJI < 1.0:
         d = FIKSNI_PRAG_DONJI
-        g = d * FAKTOR_GORNJEG_PRAGA  # Preračunaj gornji iz fiksnog donjeg
+        g = d * FAKTOR_GORNJEG_PRAGA
         print(f"  Fiksni donji prag:  {d:.4f}")
         print(f"  Gornji prag (iz fiksnog donjeg × {FAKTOR_GORNJEG_PRAGA}): {g:.4f}")
     else:
@@ -92,6 +121,10 @@ def main():
 
     ucitaj_model()
 
+    if MOD_SEGMENTACIJE == "diarizacija":
+        from analiza import ucitaj_diarizaciju
+        ucitaj_diarizaciju()
+
     print()
     print("=" * 55)
     print("[1] Ucitavanje baze govornika")
@@ -109,7 +142,9 @@ def main():
         cache_putanja=CACHE_PUTANJA
     )
     print(f"  Ukupno studenata u bazi: {len(baza)}")
-    prag_donji, prag_gornji = izracunaj_pragove(baza)
+
+    # Popravak: FAKTOR_GORNJEG_PRAGA se sada prosljeđuje u izracunaj_pragove
+    prag_donji, prag_gornji = izracunaj_pragove(baza, faktor=FAKTOR_GORNJEG_PRAGA)
     prag_donji, prag_gornji = primijeni_pragove(prag_donji, prag_gornji)
 
     prisutnost = {ime: False for ime in baza}
@@ -132,7 +167,16 @@ def main():
     for naziv in tqdm(snimke, desc="  Napredak", leave=True):
         putanja = os.path.join(DIR_SNIMKE, naziv)
         prepoznati, segmenti, uljezi_seg, n_gov = obradi_snimku(
-            putanja, baza, prag_donji, prag_gornji
+            putanja, baza, prag_donji, prag_gornji,
+            sr=SR,
+            trajanje=SEGMENT_TRAJANJE,
+            preklapanje=SEGMENT_PREKLAPANJE,
+            prop_decrease=SUM_PROP_DECREASE,
+            vad_top_db=VAD_TOP_DB,
+            vad_min_duljina=VAD_MIN_DULJINA,
+            vad_spajanje=VAD_SPAJANJE,
+            mod=MOD_SEGMENTACIJE,
+            n_govornika=DIARIZACIJA_N_GOVORNIKA,
         )
         for student in prepoznati:
             prisutnost[student] = True
@@ -157,7 +201,6 @@ def main():
         print(f"  Prepoznati: {', '.join(prepoznati) if prepoznati else 'nitko'}")
         print()
 
-        # Popis prisutnosti po snimci
         prepoznati_set = set(prepoznati)
         nedostaju_sn   = sorted(set(prisutnost.keys()) - prepoznati_set)
         print(f"  Prisutni na snimci ({len(prepoznati_set)}/{len(prisutnost)}):")
